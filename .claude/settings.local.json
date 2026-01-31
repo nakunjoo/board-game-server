@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npm run build:*)",
+      "Bash(del \"c:\\\\git\\\\projects\\\\nkj\\\\the-gang-server\\\\src\\\\events.gateway.ts\")"
+    ]
+  }
+}
