@@ -89,8 +89,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         hands: new Map([[client, []]]),
         currentTurn: 0,
         playerOrder: [client],
+        openCards: [],
+        chips: [],
       },
       createdAt: new Date(),
+      gameStarted: false,
+      hostNickname: nickname,
     };
     this.rooms.set(name, room);
     this.clientRooms.get(client)?.add(name);
@@ -107,6 +111,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       deck: room.state.deck,
       playerHands: this.getPlayerHands(room),
       myHand: room.state.hands.get(client) ?? [],
+      gameStarted: room.gameStarted,
+      openCards: room.state.openCards,
+      hostNickname: room.hostNickname,
+      chips: room.state.chips,
     });
   }
 
@@ -127,6 +135,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // 재연결 체크: 같은 닉네임으로 disconnect 타이머가 돌고 있으면 재연결
     const disconnectTimer = room.disconnectTimers.get(nickname);
+
+    // 게임이 시작된 방은 신규 입장 불가 (재연결은 가능)
+    if (room.gameStarted && !disconnectTimer) {
+      this.sendToClient(client, 'error', {
+        message: '이미 게임이 시작된 방입니다',
+      });
+      return;
+    }
     if (disconnectTimer) {
       clearTimeout(disconnectTimer);
       room.disconnectTimers.delete(nickname);
@@ -149,6 +165,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         deck: room.state.deck,
         playerHands: this.getPlayerHands(room),
         myHand: room.state.hands.get(client) ?? [],
+        gameStarted: room.gameStarted,
+        openCards: room.state.openCards,
+        hostNickname: room.hostNickname,
+        chips: room.state.chips,
       });
       return;
     }
@@ -175,6 +195,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       deck: room.state.deck,
       playerHands: this.getPlayerHands(room),
       myHand: room.state.hands.get(client) ?? [],
+      gameStarted: room.gameStarted,
+      openCards: room.state.openCards,
+      hostNickname: room.hostNickname,
+      chips: room.state.chips,
     });
 
     this.broadcastToRoom(
@@ -241,6 +265,115 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  @SubscribeMessage('startGame')
+  handleStartGame(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    const { roomName } = data;
+    const room = this.rooms.get(roomName);
+
+    if (!room || !room.clients.has(client)) {
+      this.sendToClient(client, 'error', {
+        message: `'${roomName}' 방에 참여하고 있지 않습니다`,
+      });
+      return;
+    }
+
+    if (room.clients.size < 3) {
+      this.sendToClient(client, 'error', {
+        message: '게임을 시작하려면 최소 3명이 필요합니다',
+      });
+      return;
+    }
+
+    const engine = this.engineFactory.get(room.gameType);
+    room.state.deck = engine.createDeck();
+    room.gameStarted = true;
+
+    // 칩 생성 (플레이어 수만큼)
+    room.state.chips = Array.from({ length: room.clients.size }, (_, i) => ({
+      number: i + 1,
+      state: 0, // 초기 상태는 흰색
+      owner: null,
+    }));
+
+    // 공개 카드 6장 깔기
+    room.state.openCards = [];
+    for (let i = 0; i < 6; i++) {
+      if (room.state.deck.length > 0) {
+        const card = room.state.deck.pop()!;
+        room.state.openCards.push(card);
+      }
+    }
+
+    // 모든 플레이어에게 카드 2장씩 나눠주기
+    for (let round = 0; round < 2; round++) {
+      for (const playerClient of room.state.playerOrder) {
+        if (room.state.deck.length > 0) {
+          const card = room.state.deck.pop()!;
+          const hand = room.state.hands.get(playerClient) ?? [];
+          hand.push(card);
+          room.state.hands.set(playerClient, hand);
+        }
+      }
+    }
+
+    console.log(`Game started in room '${roomName}' with ${room.clients.size} players`);
+
+    // 각 클라이언트에게 자신의 손패와 함께 gameStarted 전송
+    room.clients.forEach((playerClient) => {
+      this.sendToClient(playerClient, 'gameStarted', {
+        roomName,
+        deck: room.state.deck,
+        myHand: room.state.hands.get(playerClient) ?? [],
+        playerHands: this.getPlayerHands(room),
+        openCards: room.state.openCards,
+        chips: room.state.chips,
+      });
+    });
+  }
+
+  @SubscribeMessage('selectChip')
+  handleSelectChip(
+    @MessageBody() data: { roomName: string; chipNumber: number },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    const { roomName, chipNumber } = data;
+    const room = this.rooms.get(roomName);
+
+    if (!room || !room.clients.has(client)) {
+      this.sendToClient(client, 'error', {
+        message: `'${roomName}' 방에 참여하고 있지 않습니다`,
+      });
+      return;
+    }
+
+    const nickname = room.nicknames.get(client);
+    if (!nickname) return;
+
+    const chip = room.state.chips.find((c) => c.number === chipNumber);
+    if (!chip) return;
+
+    // 이미 선택된 칩이면 무시
+    if (chip.owner !== null) return;
+
+    // 이미 칩을 가지고 있으면 기존 칩 반납
+    const existingChip = room.state.chips.find((c) => c.owner === nickname);
+    if (existingChip) {
+      existingChip.owner = null;
+    }
+
+    // 새 칩 선택
+    chip.owner = nickname;
+
+    // 모든 클라이언트에게 업데이트 브로드캐스트
+    this.broadcastToRoom(roomName, 'chipSelected', {
+      roomName,
+      chips: room.state.chips,
+    });
+  }
+
   @SubscribeMessage('roomMessage')
   handleRoomMessage(
     @MessageBody() data: { roomName: string; message: unknown },
@@ -269,6 +402,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       gameType: room.gameType,
       memberCount: room.clients.size,
       createdAt: room.createdAt,
+      gameStarted: room.gameStarted,
     }));
 
     this.sendToClient(client, 'roomList', { rooms: roomList });

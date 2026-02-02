@@ -14,11 +14,19 @@ export interface PlayerHand {
   cardCount: number;
 }
 
+export interface Chip {
+  number: number;
+  state: number; // 0: white, 1: yellow, 2: orange, 3: red
+  owner: string | null; // nickname of owner, null if not selected
+}
+
 export interface GameState {
   deck: Card[];
   hands: Map<WebSocket, Card[]>;
   currentTurn: number;
   playerOrder: WebSocket[];
+  openCards: Card[];
+  chips: Chip[];
 }
 
 export interface Room {
@@ -29,4 +37,6 @@ export interface Room {
   disconnectTimers: Map<string, ReturnType<typeof setTimeout>>; // nickname → timer
   state: GameState;
   createdAt: Date;
+  gameStarted: boolean;
+  hostNickname: string;
 }
