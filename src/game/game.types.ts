@@ -27,6 +27,9 @@ export interface GameState {
   playerOrder: WebSocket[];
   openCards: Card[];
   chips: Chip[];
+  currentStep: number; // 1, 2, 3, 4 (오픈카드 3, 4, 5, 6장)
+  playerReady: Set<string>; // 준비 완료한 플레이어 닉네임
+  previousChips: Map<string, number[]>; // nickname → [chip numbers]
 }
 
 export interface Room {

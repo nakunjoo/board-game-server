@@ -91,6 +91,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         playerOrder: [client],
         openCards: [],
         chips: [],
+        currentStep: 1,
+        playerReady: new Set(),
+        previousChips: new Map(),
       },
       createdAt: new Date(),
       gameStarted: false,
@@ -298,9 +301,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       owner: null,
     }));
 
-    // 공개 카드 6장 깔기
+    // 공개 카드 3장만 깔기 (스텝 1)
     room.state.openCards = [];
-    for (let i = 0; i < 6; i++) {
+    room.state.currentStep = 1;
+    room.state.playerReady = new Set();
+    room.state.previousChips = new Map();
+
+    for (let i = 0; i < 3; i++) {
       if (room.state.deck.length > 0) {
         const card = room.state.deck.pop()!;
         room.state.openCards.push(card);
@@ -355,8 +362,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const chip = room.state.chips.find((c) => c.number === chipNumber);
     if (!chip) return;
 
-    // 이미 선택된 칩이면 무시
-    if (chip.owner !== null) return;
+    // 이전 소유자 확인 (빼앗기는 사람)
+    const previousOwner = chip.owner;
+
+    // 이전 소유자가 이미 준비 완료 상태라면 빼앗을 수 없음
+    if (previousOwner && room.state.playerReady.has(previousOwner)) {
+      this.sendToClient(client, 'error', {
+        message: '이미 준비 완료한 플레이어의 칩은 가져올 수 없습니다',
+      });
+      return;
+    }
 
     // 이미 칩을 가지고 있으면 기존 칩 반납
     const existingChip = room.state.chips.find((c) => c.owner === nickname);
@@ -364,13 +379,123 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       existingChip.owner = null;
     }
 
-    // 새 칩 선택
+    // 새 칩 선택 (다른 사람이 가진 칩도 가져올 수 있음)
     chip.owner = nickname;
+
+    // 칩을 빼앗긴 경우 메시지 전송
+    if (previousOwner && previousOwner !== nickname) {
+      this.broadcastToRoom(roomName, 'roomMessage', {
+        roomName,
+        message: `${nickname}님이 ${previousOwner}님의 ${chipNumber}번 칩을 가져갔습니다.`,
+        isSystem: true,
+      });
+    }
 
     // 모든 클라이언트에게 업데이트 브로드캐스트
     this.broadcastToRoom(roomName, 'chipSelected', {
       roomName,
       chips: room.state.chips,
+      stolenFrom: previousOwner && previousOwner !== nickname ? previousOwner : undefined,
+      stolenBy: previousOwner && previousOwner !== nickname ? nickname : undefined,
+      chipNumber: previousOwner && previousOwner !== nickname ? chipNumber : undefined,
+    });
+  }
+
+  @SubscribeMessage('playerReady')
+  handlePlayerReady(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    const { roomName } = data;
+    const room = this.rooms.get(roomName);
+
+    if (!room || !room.clients.has(client)) {
+      this.sendToClient(client, 'error', {
+        message: `'${roomName}' 방에 참여하고 있지 않습니다`,
+      });
+      return;
+    }
+
+    const nickname = room.nicknames.get(client);
+    if (!nickname) return;
+
+    // 플레이어가 칩을 선택했는지 확인
+    const playerChip = room.state.chips.find((c) => c.owner === nickname);
+    if (!playerChip) {
+      this.sendToClient(client, 'error', {
+        message: '칩을 먼저 선택해주세요',
+      });
+      return;
+    }
+
+    // 준비 완료 표시
+    room.state.playerReady.add(nickname);
+
+    // 모든 플레이어가 준비되었는지 확인
+    const allReady = room.clients.size === room.state.playerReady.size;
+
+    this.broadcastToRoom(roomName, 'playerReadyUpdate', {
+      roomName,
+      readyPlayers: Array.from(room.state.playerReady),
+      allReady,
+    });
+
+    if (allReady) {
+      // 다음 스텝으로 진행
+      this.proceedToNextStep(roomName);
+    }
+  }
+
+  private proceedToNextStep(roomName: string): void {
+    const room = this.rooms.get(roomName);
+    if (!room) return;
+
+    // 현재 칩을 이전 칩으로 저장
+    for (const chip of room.state.chips) {
+      if (chip.owner) {
+        const prev = room.state.previousChips.get(chip.owner) || [];
+        prev.push(chip.number);
+        room.state.previousChips.set(chip.owner, prev);
+      }
+    }
+
+    // 다음 스텝으로
+    room.state.currentStep++;
+
+    // 스텝 4(마지막)을 넘으면 게임 종료
+    if (room.state.currentStep > 4) {
+      this.broadcastToRoom(roomName, 'gameFinished', {
+        roomName,
+        finalChips: room.state.chips,
+        previousChips: Object.fromEntries(room.state.previousChips),
+      });
+      return;
+    }
+
+    // 칩 상태 업데이트 (스텝에 따라 색상 변경)
+    const chipState = room.state.currentStep - 1; // 1->0, 2->1, 3->2, 4->3
+    for (const chip of room.state.chips) {
+      chip.state = chipState;
+      chip.owner = null; // 칩 초기화
+    }
+
+    // 오픈 카드 1장 추가
+    if (room.state.deck.length > 0) {
+      const card = room.state.deck.pop()!;
+      room.state.openCards.push(card);
+    }
+
+    // 준비 상태 초기화
+    room.state.playerReady.clear();
+
+    // 다음 스텝 브로드캐스트
+    this.broadcastToRoom(roomName, 'nextStep', {
+      roomName,
+      currentStep: room.state.currentStep,
+      openCards: room.state.openCards,
+      chips: room.state.chips,
+      deck: room.state.deck,
+      previousChips: Object.fromEntries(room.state.previousChips),
     });
   }
 
