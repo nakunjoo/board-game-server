@@ -294,18 +294,24 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     room.state.deck = engine.createDeck();
     room.gameStarted = true;
 
+    // 모든 플레이어의 손패 초기화
+    room.state.hands.clear();
+    for (const playerClient of room.state.playerOrder) {
+      room.state.hands.set(playerClient, []);
+    }
+
+    // 게임 상태 초기화
+    room.state.openCards = [];
+    room.state.currentStep = 1;
+    room.state.playerReady = new Set();
+    room.state.previousChips = new Map();
+
     // 칩 생성 (플레이어 수만큼)
     room.state.chips = Array.from({ length: room.clients.size }, (_, i) => ({
       number: i + 1,
       state: 0, // 초기 상태는 흰색
       owner: null,
     }));
-
-    // 공개 카드 3장만 깔기 (스텝 1)
-    room.state.openCards = [];
-    room.state.currentStep = 1;
-    room.state.playerReady = new Set();
-    room.state.previousChips = new Map();
 
     for (let i = 0; i < 3; i++) {
       if (room.state.deck.length > 0) {
@@ -365,14 +371,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // 이전 소유자 확인 (빼앗기는 사람)
     const previousOwner = chip.owner;
 
-    // 이전 소유자가 이미 준비 완료 상태라면 빼앗을 수 없음
-    if (previousOwner && room.state.playerReady.has(previousOwner)) {
-      this.sendToClient(client, 'error', {
-        message: '이미 준비 완료한 플레이어의 칩은 가져올 수 없습니다',
-      });
-      return;
-    }
-
     // 이미 칩을 가지고 있으면 기존 칩 반납
     const existingChip = room.state.chips.find((c) => c.owner === nickname);
     if (existingChip) {
@@ -382,8 +380,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // 새 칩 선택 (다른 사람이 가진 칩도 가져올 수 있음)
     chip.owner = nickname;
 
-    // 칩을 빼앗긴 경우 메시지 전송
+    // 칩을 빼앗긴 경우: 빼앗긴 플레이어의 준비 상태 해제 + 메시지 전송
     if (previousOwner && previousOwner !== nickname) {
+      room.state.playerReady.delete(previousOwner);
+
       this.broadcastToRoom(roomName, 'roomMessage', {
         roomName,
         message: `${nickname}님이 ${previousOwner}님의 ${chipNumber}번 칩을 가져갔습니다.`,
@@ -395,6 +395,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.broadcastToRoom(roomName, 'chipSelected', {
       roomName,
       chips: room.state.chips,
+      readyPlayers: Array.from(room.state.playerReady),
       stolenFrom: previousOwner && previousOwner !== nickname ? previousOwner : undefined,
       stolenBy: previousOwner && previousOwner !== nickname ? nickname : undefined,
       chipNumber: previousOwner && previousOwner !== nickname ? chipNumber : undefined,
@@ -450,11 +451,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const room = this.rooms.get(roomName);
     if (!room) return;
 
-    // 현재 칩을 이전 칩으로 저장
+    // 현재 칩을 이전 칩으로 저장 (번호와 색상 함께)
     for (const chip of room.state.chips) {
       if (chip.owner) {
         const prev = room.state.previousChips.get(chip.owner) || [];
-        prev.push(chip.number);
+        prev.push({ number: chip.number, state: chip.state });
         room.state.previousChips.set(chip.owner, prev);
       }
     }
@@ -464,10 +465,32 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // 스텝 4(마지막)을 넘으면 게임 종료
     if (room.state.currentStep > 4) {
+      // 각 플레이어의 손패와 칩 정보를 수집
+      const playerResults = room.state.playerOrder.map((client) => {
+        const nickname = room.nicknames.get(client) || '';
+        const hand = room.state.hands.get(client) || [];
+        const chips = room.state.previousChips.get(nickname) || [];
+
+        return {
+          nickname,
+          hand,
+          chips,
+        };
+      });
+
+      // 빨간 칩(state=3) 번호 순서대로 정렬
+      playerResults.sort((a, b) => {
+        const aRedChip = a.chips.find(c => c.state === 3)?.number || 999;
+        const bRedChip = b.chips.find(c => c.state === 3)?.number || 999;
+        return aRedChip - bRedChip;
+      });
+
       this.broadcastToRoom(roomName, 'gameFinished', {
         roomName,
         finalChips: room.state.chips,
         previousChips: Object.fromEntries(room.state.previousChips),
+        openCards: room.state.openCards,
+        playerResults,
       });
       return;
     }
