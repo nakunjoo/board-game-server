@@ -603,13 +603,19 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         };
       });
 
-      // 승패 판정: 칩 번호가 오름차순인지 확인
+      // 전체 플레이어의 승패를 판정 (최종 칩 번호 순서대로 족보가 오름차순인지)
       const isWinner = this.checkWinCondition(
         playerResults,
         room.state.openCards,
       );
 
-      // 각 플레이어의 승패를 winLossRecord에 기록
+      console.log(`[승패 판정] 전체 결과 -> ${isWinner ? '성공' : '실패'}`);
+      for (const result of playerResults) {
+        const lastChip = result.chips[result.chips.length - 1] || 0;
+        console.log(`  - ${result.nickname}: 최종 칩 ${lastChip}, 전체 칩 ${JSON.stringify(result.chips)}`);
+      }
+
+      // 모든 플레이어에게 동일한 승패 기록
       for (const result of playerResults) {
         const record = room.state.winLossRecord.get(result.nickname) || [];
         // 최대 5개만 유지
@@ -626,7 +632,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         previousChips: Object.fromEntries(room.state.previousChips),
         openCards: room.state.openCards,
         playerResults,
-        isWinner,
         winLossRecord: Object.fromEntries(room.state.winLossRecord),
       });
       return;
@@ -917,12 +922,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): boolean {
     // 모든 플레이어의 칩 번호와 족보를 계산
     const playerRanks = playerResults.map((result) => {
-      const allCards = [...result.hand, ...openCards];
-      const rank = this.evaluateHandRank(allCards);
+      const handResult = this.evaluateHand(result.hand, openCards);
       return {
         nickname: result.nickname,
         chips: result.chips,
-        rank,
+        score: handResult.score,
+        tiebreakers: handResult.tiebreakers,
       };
     });
 
@@ -933,47 +938,246 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return aLastChip - bLastChip;
     });
 
+    console.log('[승패 판정] 칩 번호순 정렬:');
+    sortedByChip.forEach((p) => {
+      console.log(`  ${p.nickname}: 칩 ${p.chips[p.chips.length - 1]}, 족보점수 ${p.score}, 타이브레이커 ${JSON.stringify(p.tiebreakers)}`);
+    });
+
     // 칩 번호 순서대로 족보가 오름차순인지 확인
     for (let i = 0; i < sortedByChip.length - 1; i++) {
-      if (sortedByChip[i].rank >= sortedByChip[i + 1].rank) {
-        return false; // 족보가 오름차순이 아님 -> 실패
+      const current = sortedByChip[i];
+      const next = sortedByChip[i + 1];
+
+      // 점수 비교
+      if (current.score > next.score) {
+        console.log(`  ❌ ${current.nickname}(${current.score}) > ${next.nickname}(${next.score})`);
+        return false;
+      }
+
+      // 같은 족보면 타이브레이커 비교
+      if (current.score === next.score) {
+        for (let j = 0; j < Math.min(current.tiebreakers.length, next.tiebreakers.length); j++) {
+          if (current.tiebreakers[j] > next.tiebreakers[j]) {
+            console.log(`  ❌ 타이브레이커: ${current.nickname}[${j}](${current.tiebreakers[j]}) > ${next.nickname}[${j}](${next.tiebreakers[j]})`);
+            return false;
+          }
+          if (current.tiebreakers[j] < next.tiebreakers[j]) {
+            break; // 다음 플레이어가 더 강함
+          }
+        }
       }
     }
 
+    console.log('  ✅ 모든 조건 만족 - 성공!');
     return true; // 모든 조건 만족 -> 성공
   }
 
-  private evaluateHandRank(cards: any[]): number {
-    // 간단한 족보 평가 (실제로는 더 복잡한 로직 필요)
-    // 7장 중 최고 5장으로 족보 계산
-    // 숫자가 높을수록 좋은 족보
+  private checkPlayerWinCondition(
+    playerResult: { nickname: string; hand: any[]; chips: number[] },
+    openCards: any[],
+  ): boolean {
+    // 플레이어의 칩이 오름차순인지 확인
+    const chips = playerResult.chips;
+    if (chips.length < 2) return true; // 칩이 1개 이하면 자동 성공
 
-    const values = cards.map((c) => c.value).sort((a, b) => b - a);
-    const suits = cards.map((c) => c.type);
+    for (let i = 0; i < chips.length - 1; i++) {
+      if (chips[i] >= chips[i + 1]) {
+        return false; // 칩이 오름차순이 아님 -> 실패
+      }
+    }
 
-    // 플러시 체크
-    const suitCounts: Record<string, number> = {};
-    suits.forEach((suit) => {
-      suitCounts[suit] = (suitCounts[suit] || 0) + 1;
+    return true; // 칩이 오름차순 -> 성공
+  }
+
+  // 프론트엔드 poker.ts의 evaluateHand 로직 (서버용으로 간소화)
+  private evaluateHand(myCards: any[], openCards: any[]): { score: number; tiebreakers: number[] } {
+    const allCards = [...myCards, ...openCards];
+
+    const HAND_SCORES = {
+      "high-card": 1,
+      "one-pair": 2,
+      "two-pair": 3,
+      "three-of-a-kind": 4,
+      "straight": 5,
+      "flush": 6,
+      "full-house": 7,
+      "four-of-a-kind": 8,
+      "straight-flush": 9,
+      "royal-straight-flush": 10
+    };
+
+    const getRankValue = (value: number) => value === 1 ? 14 : value;
+
+    const countRanks = (cards: any[]) => {
+      const counts = new Map<number, any[]>();
+      for (const card of cards) {
+        const existing = counts.get(card.value) || [];
+        existing.push(card);
+        counts.set(card.value, existing);
+      }
+      return counts;
+    };
+
+    const countSuits = (cards: any[]) => {
+      const counts = new Map<string, any[]>();
+      for (const card of cards) {
+        const existing = counts.get(card.type) || [];
+        existing.push(card);
+        counts.set(card.type, existing);
+      }
+      return counts;
+    };
+
+    const isStraight = (cards: any[]): boolean => {
+      if (cards.length < 5) return false;
+      const sortedCards = [...cards].sort((a, b) => getRankValue(a.value) - getRankValue(b.value));
+
+      for (let i = 0; i <= sortedCards.length - 5; i++) {
+        let isConsecutive = true;
+        for (let j = 0; j < 4; j++) {
+          if (getRankValue(sortedCards[i + j + 1].value) !== getRankValue(sortedCards[i + j].value) + 1) {
+            isConsecutive = false;
+            break;
+          }
+        }
+        if (isConsecutive) return true;
+      }
+
+      const hasAce = sortedCards.some(c => c.value === 1);
+      const has2 = sortedCards.some(c => c.value === 2);
+      const has3 = sortedCards.some(c => c.value === 3);
+      const has4 = sortedCards.some(c => c.value === 4);
+      const has5 = sortedCards.some(c => c.value === 5);
+      return hasAce && has2 && has3 && has4 && has5;
+    };
+
+    const isFlush = (cards: any[]): boolean => {
+      const suitCounts = countSuits(cards);
+      for (const count of suitCounts.values()) {
+        if (count.length >= 5) return true;
+      }
+      return false;
+    };
+
+    const isStraightFlush = (cards: any[]): boolean => {
+      const suitCounts = countSuits(cards);
+      for (const suitCards of suitCounts.values()) {
+        if (suitCards.length >= 5 && isStraight(suitCards)) return true;
+      }
+      return false;
+    };
+
+    // 로얄 스트레이트 플러시
+    if (isStraightFlush(allCards)) {
+      const suitCounts = countSuits(allCards);
+      for (const suitCards of suitCounts.values()) {
+        if (suitCards.length >= 5 && isStraight(suitCards)) {
+          const values = suitCards.map(c => c.value).sort((a, b) => a - b);
+          if (values.join(",").includes("1,10,11,12,13")) {
+            return { score: HAND_SCORES["royal-straight-flush"], tiebreakers: [14] };
+          }
+          return { score: HAND_SCORES["straight-flush"], tiebreakers: [Math.max(...suitCards.map(c => getRankValue(c.value)))] };
+        }
+      }
+    }
+
+    const rankCounts = countRanks(allCards);
+    const countArray = Array.from(rankCounts.entries()).sort((a, b) => {
+      if (b[1].length !== a[1].length) return b[1].length - a[1].length;
+      return getRankValue(b[0]) - getRankValue(a[0]);
     });
-    const hasFlush = Object.values(suitCounts).some((count) => count >= 5);
 
-    // 페어, 트리플 등 체크
-    const valueCounts: Record<number, number> = {};
-    values.forEach((value) => {
-      valueCounts[value] = (valueCounts[value] || 0) + 1;
-    });
-    const counts = Object.values(valueCounts).sort((a, b) => b - a);
+    // 포카드
+    if (countArray.length > 0 && countArray[0][1].length === 4) {
+      return { score: HAND_SCORES["four-of-a-kind"], tiebreakers: [getRankValue(countArray[0][0])] };
+    }
 
-    // 족보 점수 (높을수록 강함)
-    if (counts[0] === 4) return 7000; // 포카드
-    if (counts[0] === 3 && counts[1] === 2) return 6000; // 풀하우스
-    if (hasFlush) return 5000; // 플러시
-    if (counts[0] === 3) return 3000; // 트리플
-    if (counts[0] === 2 && counts[1] === 2) return 2000; // 투페어
-    if (counts[0] === 2) return 1000; // 원페어
+    // 풀하우스
+    if (countArray.length >= 2 && countArray[0][1].length === 3 && countArray[1][1].length >= 2) {
+      return { score: HAND_SCORES["full-house"], tiebreakers: [getRankValue(countArray[0][0]), getRankValue(countArray[1][0])] };
+    }
+
+    // 플러시
+    if (isFlush(allCards)) {
+      const suitCounts = countSuits(allCards);
+      for (const suitCards of suitCounts.values()) {
+        if (suitCards.length >= 5) {
+          const sorted = suitCards.map(c => getRankValue(c.value)).sort((a, b) => b - a).slice(0, 5);
+          return { score: HAND_SCORES["flush"], tiebreakers: sorted };
+        }
+      }
+    }
+
+    // 스트레이트
+    if (isStraight(allCards)) {
+      const sortedCards = [...allCards].sort((a, b) => getRankValue(a.value) - getRankValue(b.value));
+      const hasAce = sortedCards.some(c => c.value === 1);
+      const has5 = sortedCards.some(c => c.value === 5);
+      const isBackStraight = hasAce && has5;
+      return { score: HAND_SCORES["straight"], tiebreakers: isBackStraight ? [5] : [Math.max(...allCards.map(c => getRankValue(c.value)))] };
+    }
+
+    // 트리플
+    if (countArray.length > 0 && countArray[0][1].length === 3) {
+      const value = countArray[0][0];
+      const tripleCards = countArray[0][1];
+      const myCardInTriple = tripleCards.some(c => myCards.some(mc => mc.name === c.name));
+
+      if (!myCardInTriple) {
+        const sortedMyCards = myCards.sort((a, b) => getRankValue(b.value) - getRankValue(a.value));
+        const tiebreakers = sortedMyCards.map(c => getRankValue(c.value));
+        return { score: HAND_SCORES["high-card"], tiebreakers };
+      }
+
+      const kickers = allCards
+        .filter(c => !tripleCards.some(tc => tc.name === c.name))
+        .sort((a, b) => getRankValue(b.value) - getRankValue(a.value))
+        .slice(0, 2)
+        .map(c => getRankValue(c.value));
+      return { score: HAND_SCORES["three-of-a-kind"], tiebreakers: [getRankValue(value), ...kickers] };
+    }
+
+    // 투페어
+    if (countArray.length >= 2 && countArray[0][1].length === 2 && countArray[1][1].length === 2) {
+      const highValue = countArray[0][0];
+      const lowValue = countArray[1][0];
+      const pairCards = [...countArray[0][1], ...countArray[1][1]];
+      const myCardInPair = pairCards.some(c => myCards.some(mc => mc.name === c.name));
+
+      if (!myCardInPair) {
+        const sortedMyCards = myCards.sort((a, b) => getRankValue(b.value) - getRankValue(a.value));
+        const tiebreakers = sortedMyCards.map(c => getRankValue(c.value));
+        return { score: HAND_SCORES["high-card"], tiebreakers };
+      }
+
+      const kicker = allCards
+        .filter(c => !pairCards.some(pc => pc.name === c.name))
+        .sort((a, b) => getRankValue(b.value) - getRankValue(a.value))[0];
+      return { score: HAND_SCORES["two-pair"], tiebreakers: [getRankValue(highValue), getRankValue(lowValue), kicker ? getRankValue(kicker.value) : 0] };
+    }
+
+    // 원페어
+    if (countArray.length > 0 && countArray[0][1].length === 2) {
+      const value = countArray[0][0];
+      const pairCards = countArray[0][1];
+      const myCardInPair = pairCards.some(c => myCards.some(mc => mc.name === c.name));
+
+      if (!myCardInPair) {
+        const sortedMyCards = myCards.sort((a, b) => getRankValue(b.value) - getRankValue(a.value));
+        const tiebreakers = sortedMyCards.map(c => getRankValue(c.value));
+        return { score: HAND_SCORES["high-card"], tiebreakers };
+      }
+
+      const kickers = allCards
+        .filter(c => !pairCards.some(pc => pc.name === c.name))
+        .sort((a, b) => getRankValue(b.value) - getRankValue(a.value))
+        .slice(0, 3)
+        .map(c => getRankValue(c.value));
+      return { score: HAND_SCORES["one-pair"], tiebreakers: [getRankValue(value), ...kickers] };
+    }
 
     // 하이카드
-    return values[0];
+    const allSorted = allCards.sort((a, b) => getRankValue(b.value) - getRankValue(a.value)).slice(0, 5);
+    return { score: HAND_SCORES["high-card"], tiebreakers: allSorted.map(c => getRankValue(c.value)) };
   }
 }
