@@ -64,10 +64,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('createRoom')
   handleCreateRoom(
-    @MessageBody() data: { name: string; nickname: string; gameType?: string },
+    @MessageBody()
+    data: {
+      name: string;
+      nickname: string;
+      gameType?: string;
+      password?: string;
+    },
     @ConnectedSocket() client: WebSocket,
   ): void {
-    const { name, nickname, gameType = 'gang' } = data;
+    const { name, nickname, gameType = 'gang', password } = data;
 
     if (this.rooms.has(name)) {
       this.sendToClient(client, 'error', {
@@ -94,10 +100,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         currentStep: 1,
         playerReady: new Set(),
         previousChips: new Map(),
+        winLossRecord: new Map(),
       },
       createdAt: new Date(),
       gameStarted: false,
       hostNickname: nickname,
+      password: password || undefined,
     };
     this.rooms.set(name, room);
     this.clientRooms.get(client)?.add(name);
@@ -118,20 +126,32 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       openCards: room.state.openCards,
       hostNickname: room.hostNickname,
       chips: room.state.chips,
+      currentStep: room.state.currentStep,
+      readyPlayers: Array.from(room.state.playerReady),
+      previousChips: Object.fromEntries(room.state.previousChips),
+      winLossRecord: Object.fromEntries(room.state.winLossRecord),
     });
   }
 
   @SubscribeMessage('joinRoom')
   handleJoinRoom(
-    @MessageBody() data: { name: string; nickname: string },
+    @MessageBody() data: { name: string; nickname: string; password?: string },
     @ConnectedSocket() client: WebSocket,
   ): void {
-    const { name, nickname } = data;
+    const { name, nickname, password } = data;
     const room = this.rooms.get(name);
 
     if (!room) {
       this.sendToClient(client, 'error', {
         message: `'${name}' 방이 존재하지 않습니다`,
+      });
+      return;
+    }
+
+    // 비밀방 체크
+    if (room.password && room.password !== password) {
+      this.sendToClient(client, 'error', {
+        message: '비밀번호가 일치하지 않습니다',
       });
       return;
     }
@@ -160,11 +180,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       console.log(`'${nickname}' reconnected to room '${name}'`);
 
+      const players = this.getPlayersWithOrder(room);
+      const order = players.find((p) => p.nickname === nickname)?.order ?? 0;
+
       this.sendToClient(client, 'roomJoined', {
         name,
         gameType: room.gameType,
         memberCount: room.clients.size,
-        players: this.getPlayersWithOrder(room),
+        players,
         deck: room.state.deck,
         playerHands: this.getPlayerHands(room),
         myHand: room.state.hands.get(client) ?? [],
@@ -172,7 +195,26 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         openCards: room.state.openCards,
         hostNickname: room.hostNickname,
         chips: room.state.chips,
+        currentStep: room.state.currentStep,
+        readyPlayers: Array.from(room.state.playerReady),
+        previousChips: Object.fromEntries(room.state.previousChips),
+        winLossRecord: Object.fromEntries(room.state.winLossRecord),
       });
+
+      // 재연결 시에도 다른 플레이어들에게 알림
+      this.broadcastToRoom(
+        name,
+        'userJoined',
+        {
+          roomName: name,
+          memberCount: room.clients.size,
+          nickname,
+          order,
+          players,
+        },
+        client,
+      );
+
       return;
     }
 
@@ -202,6 +244,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       openCards: room.state.openCards,
       hostNickname: room.hostNickname,
       chips: room.state.chips,
+      currentStep: room.state.currentStep,
+      readyPlayers: Array.from(room.state.playerReady),
+      previousChips: Object.fromEntries(room.state.previousChips),
+      winLossRecord: Object.fromEntries(room.state.winLossRecord),
     });
 
     this.broadcastToRoom(
@@ -228,6 +274,72 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       name: data.name,
       message: `'${data.name}' 방에서 퇴장했습니다`,
     });
+  }
+
+  @SubscribeMessage('kickPlayer')
+  handleKickPlayer(
+    @MessageBody() data: { roomName: string; targetNickname: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    const { roomName, targetNickname } = data;
+    const room = this.rooms.get(roomName);
+
+    if (!room || !room.clients.has(client)) {
+      this.sendToClient(client, 'error', {
+        message: `'${roomName}' 방에 참여하고 있지 않습니다`,
+      });
+      return;
+    }
+
+    // 방장 확인
+    const hostNickname = room.hostNickname;
+    const requestNickname = room.nicknames.get(client);
+
+    if (requestNickname !== hostNickname) {
+      this.sendToClient(client, 'error', {
+        message: '방장만 강퇴할 수 있습니다',
+      });
+      return;
+    }
+
+    // 게임 시작 후에는 강퇴 불가
+    if (room.gameStarted) {
+      this.sendToClient(client, 'error', {
+        message: '게임 시작 후에는 강퇴할 수 없습니다',
+      });
+      return;
+    }
+
+    // 자기 자신은 강퇴 불가
+    if (targetNickname === hostNickname) {
+      this.sendToClient(client, 'error', {
+        message: '자기 자신은 강퇴할 수 없습니다',
+      });
+      return;
+    }
+
+    // 대상 플레이어 찾기
+    const targetClient = this.findClientByNickname(room, targetNickname);
+
+    if (!targetClient) {
+      this.sendToClient(client, 'error', {
+        message: '해당 플레이어를 찾을 수 없습니다',
+      });
+      return;
+    }
+
+    // 강퇴 대상에게 알림
+    this.sendToClient(targetClient, 'kicked', {
+      roomName,
+      message: '방장에 의해 강퇴되었습니다',
+    });
+
+    // 강퇴 처리
+    this.leaveRoom(targetClient, roomName);
+
+    console.log(
+      `'${targetNickname}' kicked from room '${roomName}' by '${hostNickname}'`,
+    );
   }
 
   @SubscribeMessage('drawCard')
@@ -313,6 +425,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       owner: null,
     }));
 
+    // 공개 카드 3장만 깔기 (스텝 1)
+    room.state.openCards = [];
+    room.state.currentStep = 1;
+    room.state.playerReady = new Set();
+    room.state.previousChips = new Map();
+
+    // 모든 플레이어의 손패 초기화
+    room.state.hands.clear();
+    room.state.playerOrder.forEach((playerClient) => {
+      room.state.hands.set(playerClient, []);
+    });
+
     for (let i = 0; i < 3; i++) {
       if (room.state.deck.length > 0) {
         const card = room.state.deck.pop()!;
@@ -332,7 +456,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
 
-    console.log(`Game started in room '${roomName}' with ${room.clients.size} players`);
+    console.log(
+      `Game started in room '${roomName}' with ${room.clients.size} players`,
+    );
 
     // 각 클라이언트에게 자신의 손패와 함께 gameStarted 전송
     room.clients.forEach((playerClient) => {
@@ -380,7 +506,22 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // 새 칩 선택 (다른 사람이 가진 칩도 가져올 수 있음)
     chip.owner = nickname;
 
-    // 칩을 빼앗긴 경우: 빼앗긴 플레이어의 준비 상태 해제 + 메시지 전송
+    // 칩 변경된 플레이어들의 준비 상태 해제
+    const affectedPlayers = [nickname];
+    if (previousOwner && previousOwner !== nickname) {
+      affectedPlayers.push(previousOwner);
+    }
+
+    // 영향받은 플레이어들의 준비 완료 해제
+    const unreadyPlayers: string[] = [];
+    affectedPlayers.forEach((player) => {
+      if (room.state.playerReady.has(player)) {
+        room.state.playerReady.delete(player);
+        unreadyPlayers.push(player);
+      }
+    });
+
+    // 칩을 빼앗긴 경우 메시지 전송
     if (previousOwner && previousOwner !== nickname) {
       room.state.playerReady.delete(previousOwner);
 
@@ -396,10 +537,22 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       roomName,
       chips: room.state.chips,
       readyPlayers: Array.from(room.state.playerReady),
-      stolenFrom: previousOwner && previousOwner !== nickname ? previousOwner : undefined,
-      stolenBy: previousOwner && previousOwner !== nickname ? nickname : undefined,
-      chipNumber: previousOwner && previousOwner !== nickname ? chipNumber : undefined,
+      stolenFrom:
+        previousOwner && previousOwner !== nickname ? previousOwner : undefined,
+      stolenBy:
+        previousOwner && previousOwner !== nickname ? nickname : undefined,
+      chipNumber:
+        previousOwner && previousOwner !== nickname ? chipNumber : undefined,
     });
+
+    // 준비 상태가 해제된 플레이어가 있으면 알림
+    if (unreadyPlayers.length > 0) {
+      this.broadcastToRoom(roomName, 'playerReadyUpdate', {
+        roomName,
+        readyPlayers: Array.from(room.state.playerReady),
+        allReady: false,
+      });
+    }
   }
 
   @SubscribeMessage('playerReady')
@@ -465,25 +618,43 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // 스텝 4(마지막)을 넘으면 게임 종료
     if (room.state.currentStep > 4) {
-      // 각 플레이어의 손패와 칩 정보를 수집
+      // 각 플레이어의 결과 데이터 생성 및 승패 판정
       const playerResults = room.state.playerOrder.map((client) => {
-        const nickname = room.nicknames.get(client) || '';
-        const hand = room.state.hands.get(client) || [];
-        const chips = room.state.previousChips.get(nickname) || [];
+        const nickname = room.nicknames.get(client) ?? '';
+        const hand = room.state.hands.get(client) ?? [];
+        const playerPrevChips = room.state.previousChips.get(nickname) ?? [];
 
         return {
           nickname,
           hand,
-          chips,
+          chips: playerPrevChips,
         };
       });
 
-      // 빨간 칩(state=3) 번호 순서대로 정렬
-      playerResults.sort((a, b) => {
-        const aRedChip = a.chips.find(c => c.state === 3)?.number || 999;
-        const bRedChip = b.chips.find(c => c.state === 3)?.number || 999;
-        return aRedChip - bRedChip;
-      });
+      // 전체 플레이어의 승패를 판정 (최종 칩 번호 순서대로 족보가 오름차순인지)
+      const isWinner = this.checkWinCondition(
+        playerResults,
+        room.state.openCards,
+      );
+
+      console.log(`[승패 판정] 전체 결과 -> ${isWinner ? '성공' : '실패'}`);
+      for (const result of playerResults) {
+        const lastChip = result.chips[result.chips.length - 1] || 0;
+        console.log(
+          `  - ${result.nickname}: 최종 칩 ${lastChip}, 전체 칩 ${JSON.stringify(result.chips)}`,
+        );
+      }
+
+      // 모든 플레이어에게 동일한 승패 기록
+      for (const result of playerResults) {
+        const record = room.state.winLossRecord.get(result.nickname) || [];
+        // 최대 5개만 유지
+        if (record.length >= 5) {
+          record.shift(); // 가장 오래된 기록 제거
+        }
+        record.push(isWinner);
+        room.state.winLossRecord.set(result.nickname, record);
+      }
 
       this.broadcastToRoom(roomName, 'gameFinished', {
         roomName,
@@ -491,6 +662,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         previousChips: Object.fromEntries(room.state.previousChips),
         openCards: room.state.openCards,
         playerResults,
+        winLossRecord: Object.fromEntries(room.state.winLossRecord),
       });
       return;
     }
@@ -551,9 +723,82 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       memberCount: room.clients.size,
       createdAt: room.createdAt,
       gameStarted: room.gameStarted,
+      isPrivate: !!room.password,
     }));
 
     this.sendToClient(client, 'roomList', { rooms: roomList });
+  }
+
+  @SubscribeMessage('getPlayerList')
+  handleGetPlayerList(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    const { roomName } = data;
+    const room = this.rooms.get(roomName);
+
+    if (!room) {
+      this.sendToClient(client, 'error', {
+        message: `'${roomName}' 방이 존재하지 않습니다`,
+      });
+      return;
+    }
+
+    if (!room.clients.has(client)) {
+      this.sendToClient(client, 'error', {
+        message: `'${roomName}' 방에 참여하고 있지 않습니다`,
+      });
+      return;
+    }
+
+    const players = this.getPlayersWithOrder(room);
+
+    this.sendToClient(client, 'playerList', {
+      roomName,
+      players,
+    });
+  }
+
+  @SubscribeMessage('readyNextRound')
+  handleReadyNextRound(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    const { roomName } = data;
+    const room = this.rooms.get(roomName);
+
+    if (!room || !room.clients.has(client)) {
+      this.sendToClient(client, 'error', {
+        message: `'${roomName}' 방에 참여하고 있지 않습니다`,
+      });
+      return;
+    }
+
+    const nickname = room.nicknames.get(client);
+    if (!nickname) return;
+
+    // 다음 라운드 준비 플레이어 추가
+    if (!room.state.playerReady.has(nickname)) {
+      room.state.playerReady.add(nickname);
+    }
+
+    // 모든 플레이어가 준비되었는지 확인
+    const allReady = room.clients.size === room.state.playerReady.size;
+
+    this.broadcastToRoom(roomName, 'nextRoundReadyUpdate', {
+      roomName,
+      readyPlayers: Array.from(room.state.playerReady),
+      allReady,
+    });
+
+    // 모두 준비되면 게임 시작
+    if (allReady) {
+      // 준비 상태 초기화
+      room.state.playerReady.clear();
+
+      // 게임 시작
+      this.handleStartGame({ roomName }, client);
+    }
   }
 
   @SubscribeMessage('message')
@@ -696,5 +941,353 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (client.readyState === WebSocket.OPEN) {
       client.send(JSON.stringify({ event, data }));
     }
+  }
+
+  private checkWinCondition(
+    playerResults: Array<{ nickname: string; hand: any[]; chips: number[] }>,
+    openCards: any[],
+  ): boolean {
+    // 모든 플레이어의 칩 번호와 족보를 계산
+    const playerRanks = playerResults.map((result) => {
+      const handResult = this.evaluateHand(result.hand, openCards);
+      return {
+        nickname: result.nickname,
+        chips: result.chips,
+        score: handResult.score,
+        tiebreakers: handResult.tiebreakers,
+      };
+    });
+
+    // 칩 번호 순서대로 정렬 (4개 스텝이므로 4개 칩)
+    const sortedByChip = [...playerRanks].sort((a, b) => {
+      const aLastChip = a.chips[a.chips.length - 1] || 0;
+      const bLastChip = b.chips[b.chips.length - 1] || 0;
+      return aLastChip - bLastChip;
+    });
+
+    console.log('[승패 판정] 칩 번호순 정렬:');
+    sortedByChip.forEach((p) => {
+      console.log(
+        `  ${p.nickname}: 칩 ${p.chips[p.chips.length - 1]}, 족보점수 ${p.score}, 타이브레이커 ${JSON.stringify(p.tiebreakers)}`,
+      );
+    });
+
+    // 칩 번호 순서대로 족보가 오름차순인지 확인
+    for (let i = 0; i < sortedByChip.length - 1; i++) {
+      const current = sortedByChip[i];
+      const next = sortedByChip[i + 1];
+
+      // 점수 비교
+      if (current.score > next.score) {
+        console.log(
+          `  ❌ ${current.nickname}(${current.score}) > ${next.nickname}(${next.score})`,
+        );
+        return false;
+      }
+
+      // 같은 족보면 타이브레이커 비교
+      if (current.score === next.score) {
+        for (
+          let j = 0;
+          j < Math.min(current.tiebreakers.length, next.tiebreakers.length);
+          j++
+        ) {
+          if (current.tiebreakers[j] > next.tiebreakers[j]) {
+            console.log(
+              `  ❌ 타이브레이커: ${current.nickname}[${j}](${current.tiebreakers[j]}) > ${next.nickname}[${j}](${next.tiebreakers[j]})`,
+            );
+            return false;
+          }
+          if (current.tiebreakers[j] < next.tiebreakers[j]) {
+            break; // 다음 플레이어가 더 강함
+          }
+        }
+      }
+    }
+
+    console.log('  ✅ 모든 조건 만족 - 성공!');
+    return true; // 모든 조건 만족 -> 성공
+  }
+
+  private checkPlayerWinCondition(
+    playerResult: { nickname: string; hand: any[]; chips: number[] },
+    openCards: any[],
+  ): boolean {
+    // 플레이어의 칩이 오름차순인지 확인
+    const chips = playerResult.chips;
+    if (chips.length < 2) return true; // 칩이 1개 이하면 자동 성공
+
+    for (let i = 0; i < chips.length - 1; i++) {
+      if (chips[i] >= chips[i + 1]) {
+        return false; // 칩이 오름차순이 아님 -> 실패
+      }
+    }
+
+    return true; // 칩이 오름차순 -> 성공
+  }
+
+  // 프론트엔드 poker.ts의 evaluateHand 로직 (서버용으로 간소화)
+  private evaluateHand(
+    myCards: any[],
+    openCards: any[],
+  ): { score: number; tiebreakers: number[] } {
+    const allCards = [...myCards, ...openCards];
+
+    const HAND_SCORES = {
+      'high-card': 1,
+      'one-pair': 2,
+      'two-pair': 3,
+      'three-of-a-kind': 4,
+      straight: 5,
+      flush: 6,
+      'full-house': 7,
+      'four-of-a-kind': 8,
+      'straight-flush': 9,
+      'royal-straight-flush': 10,
+    };
+
+    const getRankValue = (value: number) => (value === 1 ? 14 : value);
+
+    const countRanks = (cards: any[]) => {
+      const counts = new Map<number, any[]>();
+      for (const card of cards) {
+        const existing = counts.get(card.value) || [];
+        existing.push(card);
+        counts.set(card.value, existing);
+      }
+      return counts;
+    };
+
+    const countSuits = (cards: any[]) => {
+      const counts = new Map<string, any[]>();
+      for (const card of cards) {
+        const existing = counts.get(card.type) || [];
+        existing.push(card);
+        counts.set(card.type, existing);
+      }
+      return counts;
+    };
+
+    const isStraight = (cards: any[]): boolean => {
+      if (cards.length < 5) return false;
+      const sortedCards = [...cards].sort(
+        (a, b) => getRankValue(a.value) - getRankValue(b.value),
+      );
+
+      for (let i = 0; i <= sortedCards.length - 5; i++) {
+        let isConsecutive = true;
+        for (let j = 0; j < 4; j++) {
+          if (
+            getRankValue(sortedCards[i + j + 1].value) !==
+            getRankValue(sortedCards[i + j].value) + 1
+          ) {
+            isConsecutive = false;
+            break;
+          }
+        }
+        if (isConsecutive) return true;
+      }
+
+      const hasAce = sortedCards.some((c) => c.value === 1);
+      const has2 = sortedCards.some((c) => c.value === 2);
+      const has3 = sortedCards.some((c) => c.value === 3);
+      const has4 = sortedCards.some((c) => c.value === 4);
+      const has5 = sortedCards.some((c) => c.value === 5);
+      return hasAce && has2 && has3 && has4 && has5;
+    };
+
+    const isFlush = (cards: any[]): boolean => {
+      const suitCounts = countSuits(cards);
+      for (const count of suitCounts.values()) {
+        if (count.length >= 5) return true;
+      }
+      return false;
+    };
+
+    const isStraightFlush = (cards: any[]): boolean => {
+      const suitCounts = countSuits(cards);
+      for (const suitCards of suitCounts.values()) {
+        if (suitCards.length >= 5 && isStraight(suitCards)) return true;
+      }
+      return false;
+    };
+
+    // 로얄 스트레이트 플러시
+    if (isStraightFlush(allCards)) {
+      const suitCounts = countSuits(allCards);
+      for (const suitCards of suitCounts.values()) {
+        if (suitCards.length >= 5 && isStraight(suitCards)) {
+          const values = suitCards.map((c) => c.value).sort((a, b) => a - b);
+          if (values.join(',').includes('1,10,11,12,13')) {
+            return {
+              score: HAND_SCORES['royal-straight-flush'],
+              tiebreakers: [14],
+            };
+          }
+          return {
+            score: HAND_SCORES['straight-flush'],
+            tiebreakers: [
+              Math.max(...suitCards.map((c) => getRankValue(c.value))),
+            ],
+          };
+        }
+      }
+    }
+
+    const rankCounts = countRanks(allCards);
+    const countArray = Array.from(rankCounts.entries()).sort((a, b) => {
+      if (b[1].length !== a[1].length) return b[1].length - a[1].length;
+      return getRankValue(b[0]) - getRankValue(a[0]);
+    });
+
+    // 포카드
+    if (countArray.length > 0 && countArray[0][1].length === 4) {
+      return {
+        score: HAND_SCORES['four-of-a-kind'],
+        tiebreakers: [getRankValue(countArray[0][0])],
+      };
+    }
+
+    // 풀하우스
+    if (
+      countArray.length >= 2 &&
+      countArray[0][1].length === 3 &&
+      countArray[1][1].length >= 2
+    ) {
+      return {
+        score: HAND_SCORES['full-house'],
+        tiebreakers: [
+          getRankValue(countArray[0][0]),
+          getRankValue(countArray[1][0]),
+        ],
+      };
+    }
+
+    // 플러시
+    if (isFlush(allCards)) {
+      const suitCounts = countSuits(allCards);
+      for (const suitCards of suitCounts.values()) {
+        if (suitCards.length >= 5) {
+          const sorted = suitCards
+            .map((c) => getRankValue(c.value))
+            .sort((a, b) => b - a)
+            .slice(0, 5);
+          return { score: HAND_SCORES['flush'], tiebreakers: sorted };
+        }
+      }
+    }
+
+    // 스트레이트
+    if (isStraight(allCards)) {
+      const sortedCards = [...allCards].sort(
+        (a, b) => getRankValue(a.value) - getRankValue(b.value),
+      );
+      const hasAce = sortedCards.some((c) => c.value === 1);
+      const has5 = sortedCards.some((c) => c.value === 5);
+      const isBackStraight = hasAce && has5;
+      return {
+        score: HAND_SCORES['straight'],
+        tiebreakers: isBackStraight
+          ? [5]
+          : [Math.max(...allCards.map((c) => getRankValue(c.value)))],
+      };
+    }
+
+    // 트리플
+    if (countArray.length > 0 && countArray[0][1].length === 3) {
+      const value = countArray[0][0];
+      const tripleCards = countArray[0][1];
+      const myCardInTriple = tripleCards.some((c) =>
+        myCards.some((mc) => mc.name === c.name),
+      );
+
+      if (!myCardInTriple) {
+        const sortedMyCards = myCards.sort(
+          (a, b) => getRankValue(b.value) - getRankValue(a.value),
+        );
+        const tiebreakers = sortedMyCards.map((c) => getRankValue(c.value));
+        return { score: HAND_SCORES['high-card'], tiebreakers };
+      }
+
+      const kickers = allCards
+        .filter((c) => !tripleCards.some((tc) => tc.name === c.name))
+        .sort((a, b) => getRankValue(b.value) - getRankValue(a.value))
+        .slice(0, 2)
+        .map((c) => getRankValue(c.value));
+      return {
+        score: HAND_SCORES['three-of-a-kind'],
+        tiebreakers: [getRankValue(value), ...kickers],
+      };
+    }
+
+    // 투페어
+    if (
+      countArray.length >= 2 &&
+      countArray[0][1].length === 2 &&
+      countArray[1][1].length === 2
+    ) {
+      const highValue = countArray[0][0];
+      const lowValue = countArray[1][0];
+      const pairCards = [...countArray[0][1], ...countArray[1][1]];
+      const myCardInPair = pairCards.some((c) =>
+        myCards.some((mc) => mc.name === c.name),
+      );
+
+      if (!myCardInPair) {
+        const sortedMyCards = myCards.sort(
+          (a, b) => getRankValue(b.value) - getRankValue(a.value),
+        );
+        const tiebreakers = sortedMyCards.map((c) => getRankValue(c.value));
+        return { score: HAND_SCORES['high-card'], tiebreakers };
+      }
+
+      const kicker = allCards
+        .filter((c) => !pairCards.some((pc) => pc.name === c.name))
+        .sort((a, b) => getRankValue(b.value) - getRankValue(a.value))[0];
+      return {
+        score: HAND_SCORES['two-pair'],
+        tiebreakers: [
+          getRankValue(highValue),
+          getRankValue(lowValue),
+          kicker ? getRankValue(kicker.value) : 0,
+        ],
+      };
+    }
+
+    // 원페어
+    if (countArray.length > 0 && countArray[0][1].length === 2) {
+      const value = countArray[0][0];
+      const pairCards = countArray[0][1];
+      const myCardInPair = pairCards.some((c) =>
+        myCards.some((mc) => mc.name === c.name),
+      );
+
+      if (!myCardInPair) {
+        const sortedMyCards = myCards.sort(
+          (a, b) => getRankValue(b.value) - getRankValue(a.value),
+        );
+        const tiebreakers = sortedMyCards.map((c) => getRankValue(c.value));
+        return { score: HAND_SCORES['high-card'], tiebreakers };
+      }
+
+      const kickers = allCards
+        .filter((c) => !pairCards.some((pc) => pc.name === c.name))
+        .sort((a, b) => getRankValue(b.value) - getRankValue(a.value))
+        .slice(0, 3)
+        .map((c) => getRankValue(c.value));
+      return {
+        score: HAND_SCORES['one-pair'],
+        tiebreakers: [getRankValue(value), ...kickers],
+      };
+    }
+
+    // 하이카드
+    const allSorted = allCards
+      .sort((a, b) => getRankValue(b.value) - getRankValue(a.value))
+      .slice(0, 5);
+    return {
+      score: HAND_SCORES['high-card'],
+      tiebreakers: allSorted.map((c) => getRankValue(c.value)),
+    };
   }
 }

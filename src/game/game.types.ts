@@ -30,6 +30,7 @@ export interface GameState {
   currentStep: number; // 1, 2, 3, 4 (오픈카드 3, 4, 5, 6장)
   playerReady: Set<string>; // 준비 완료한 플레이어 닉네임
   previousChips: Map<string, number[]>; // nickname → [chip numbers]
+  winLossRecord: Map<string, boolean[]>; // nickname → [win/loss history] (최대 5개)
 }
 
 export interface Room {
@@ -42,4 +43,5 @@ export interface Room {
   createdAt: Date;
   gameStarted: boolean;
   hostNickname: string;
+  password?: string; // 비밀방인 경우 비밀번호
 }
