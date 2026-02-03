@@ -99,6 +99,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         chips: [],
         currentStep: 1,
         playerReady: new Set(),
+        nextRoundReady: new Set(),
         previousChips: new Map(),
         winLossRecord: new Map(),
       },
@@ -264,6 +265,35 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     );
   }
 
+  @SubscribeMessage('verifyPassword')
+  handleVerifyPassword(
+    @MessageBody() data: { name: string; password: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    const { name, password } = data;
+    const room = this.rooms.get(name);
+
+    if (!room) {
+      this.sendToClient(client, 'error', {
+        message: `'${name}' 방이 존재하지 않습니다`,
+      });
+      return;
+    }
+
+    if (room.password && room.password !== password) {
+      this.sendToClient(client, 'passwordVerified', {
+        name,
+        success: false,
+      });
+      return;
+    }
+
+    this.sendToClient(client, 'passwordVerified', {
+      name,
+      success: true,
+    });
+  }
+
   @SubscribeMessage('leaveRoom')
   handleLeaveRoom(
     @MessageBody() data: { name: string },
@@ -406,17 +436,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     room.state.deck = engine.createDeck();
     room.gameStarted = true;
 
+    // 게임 상태 초기화
+    room.state.openCards = [];
+    room.state.currentStep = 1;
+    room.state.playerReady = new Set();
+    room.state.nextRoundReady = new Set();
+    room.state.previousChips = new Map();
+
     // 모든 플레이어의 손패 초기화
     room.state.hands.clear();
     for (const playerClient of room.state.playerOrder) {
       room.state.hands.set(playerClient, []);
     }
-
-    // 게임 상태 초기화
-    room.state.openCards = [];
-    room.state.currentStep = 1;
-    room.state.playerReady = new Set();
-    room.state.previousChips = new Map();
 
     // 칩 생성 (플레이어 수만큼)
     room.state.chips = Array.from({ length: room.clients.size }, (_, i) => ({
@@ -425,25 +456,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       owner: null,
     }));
 
-    // 공개 카드 3장만 깔기 (스텝 1)
-    room.state.openCards = [];
-    room.state.currentStep = 1;
-    room.state.playerReady = new Set();
-    room.state.previousChips = new Map();
-
-    // 모든 플레이어의 손패 초기화
-    room.state.hands.clear();
-    room.state.playerOrder.forEach((playerClient) => {
-      room.state.hands.set(playerClient, []);
-    });
-
-    for (let i = 0; i < 3; i++) {
-      if (room.state.deck.length > 0) {
-        const card = room.state.deck.pop()!;
-        room.state.openCards.push(card);
-      }
-    }
-
+    // 스텝 1: 오픈카드 없이 핸드 2장만 배분
     // 모든 플레이어에게 카드 2장씩 나눠주기
     for (let round = 0; round < 2; round++) {
       for (const playerClient of room.state.playerOrder) {
@@ -604,11 +617,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const room = this.rooms.get(roomName);
     if (!room) return;
 
-    // 현재 칩을 이전 칩으로 저장 (번호와 색상 함께)
+    // 현재 칩을 이전 칩으로 저장
     for (const chip of room.state.chips) {
       if (chip.owner) {
         const prev = room.state.previousChips.get(chip.owner) || [];
-        prev.push({ number: chip.number, state: chip.state });
+        prev.push(chip.number);
         room.state.previousChips.set(chip.owner, prev);
       }
     }
@@ -656,6 +669,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         room.state.winLossRecord.set(result.nickname, record);
       }
 
+      // 준비 상태 초기화 (다음 라운드 준비에서 재사용하므로 반드시 초기화)
+      room.state.playerReady.clear();
+
       this.broadcastToRoom(roomName, 'gameFinished', {
         roomName,
         finalChips: room.state.chips,
@@ -674,10 +690,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       chip.owner = null; // 칩 초기화
     }
 
-    // 오픈 카드 1장 추가
-    if (room.state.deck.length > 0) {
-      const card = room.state.deck.pop()!;
-      room.state.openCards.push(card);
+    // 오픈 카드 추가: 스텝2에서 3장, 스텝3에서 +1장(4장), 스텝4에서 +1장(5장)
+    const cardsToAdd = room.state.currentStep === 2 ? 3 : 1;
+    for (let i = 0; i < cardsToAdd; i++) {
+      if (room.state.deck.length > 0) {
+        const card = room.state.deck.pop()!;
+        room.state.openCards.push(card);
+      }
     }
 
     // 준비 상태 초기화
@@ -778,23 +797,23 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!nickname) return;
 
     // 다음 라운드 준비 플레이어 추가
-    if (!room.state.playerReady.has(nickname)) {
-      room.state.playerReady.add(nickname);
+    if (!room.state.nextRoundReady.has(nickname)) {
+      room.state.nextRoundReady.add(nickname);
     }
 
     // 모든 플레이어가 준비되었는지 확인
-    const allReady = room.clients.size === room.state.playerReady.size;
+    const allReady = room.clients.size === room.state.nextRoundReady.size;
 
     this.broadcastToRoom(roomName, 'nextRoundReadyUpdate', {
       roomName,
-      readyPlayers: Array.from(room.state.playerReady),
+      readyPlayers: Array.from(room.state.nextRoundReady),
       allReady,
     });
 
     // 모두 준비되면 게임 시작
     if (allReady) {
       // 준비 상태 초기화
-      room.state.playerReady.clear();
+      room.state.nextRoundReady.clear();
 
       // 게임 시작
       this.handleStartGame({ roomName }, client);
