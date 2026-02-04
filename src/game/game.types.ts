@@ -17,7 +17,7 @@ export interface PlayerHand {
 export interface Chip {
   number: number;
   state: number; // 0: white, 1: yellow, 2: orange, 3: red
-  owner: string | null; // nickname of owner, null if not selected
+  owner: string | null; // playerId of owner, null if not selected
 }
 
 export interface GameState {
@@ -28,21 +28,23 @@ export interface GameState {
   openCards: Card[];
   chips: Chip[];
   currentStep: number; // 1, 2, 3, 4 (오픈카드 3, 4, 5, 6장)
-  playerReady: Set<string>; // 준비 완료한 플레이어 닉네임
-  nextRoundReady: Set<string>; // 다음 라운드 준비 완료한 플레이어 닉네임
-  previousChips: Map<string, number[]>; // nickname → [chip numbers]
-  winLossRecord: Map<string, boolean[]>; // nickname → [win/loss history] (최대 5개)
+  playerReady: Set<string>; // 준비 완료한 플레이어 playerId
+  nextRoundReady: Set<string>; // 다음 라운드 준비 완료한 플레이어 playerId
+  previousChips: Map<string, number[]>; // playerId → [chip numbers]
+  winLossRecord: Map<string, boolean[]>; // playerId → [win/loss history] (최대 5개)
 }
 
 export interface Room {
   name: string;
   gameType: string;
   clients: Set<WebSocket>;
-  nicknames: Map<WebSocket, string>;
-  disconnectTimers: Map<string, ReturnType<typeof setTimeout>>; // nickname → timer
+  playerIds: Map<WebSocket, string>; // socket → playerId (고유 식별자)
+  nicknames: Map<WebSocket, string>; // socket → nickname (표시용)
+  disconnectTimers: Map<string, ReturnType<typeof setTimeout>>; // playerId → timer
   state: GameState;
   createdAt: Date;
   gameStarted: boolean;
+  hostPlayerId: string;
   hostNickname: string;
   password?: string; // 비밀방인 경우 비밀번호
 }
