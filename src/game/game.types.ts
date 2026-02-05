@@ -34,6 +34,12 @@ export interface GameState {
   winLossRecord: Map<string, boolean[]>; // playerId → [win/loss history] (최대 5개)
 }
 
+export interface PlayerResult {
+  nickname: string;
+  chips: number[];
+  hand: Card[];
+}
+
 export interface Room {
   name: string;
   gameType: string;
@@ -44,6 +50,10 @@ export interface Room {
   state: GameState;
   createdAt: Date;
   gameStarted: boolean;
+  gameFinished: boolean; // 게임 종료 여부 (재연결 시 필요)
+  lastGameResults?: PlayerResult[]; // 마지막 게임 결과 (재연결 시 필요)
+  gameOver?: boolean; // 최종 게임 오버 여부
+  gameOverResult?: 'victory' | 'defeat' | null; // 최종 결과
   hostPlayerId: string;
   hostNickname: string;
   password?: string; // 비밀방인 경우 비밀번호

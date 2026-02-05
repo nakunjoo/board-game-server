@@ -107,6 +107,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       },
       createdAt: new Date(),
       gameStarted: false,
+      gameFinished: false,
       hostPlayerId: playerId,
       hostNickname: nickname,
       password: password || undefined,
@@ -127,6 +128,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       playerHands: this.getPlayerHands(room),
       myHand: room.state.hands.get(client) ?? [],
       gameStarted: room.gameStarted,
+      gameFinished: room.gameFinished,
+      lastGameResults: room.lastGameResults,
+      gameOver: room.gameOver,
+      gameOverResult: room.gameOverResult,
       openCards: room.state.openCards,
       hostPlayerId: room.hostPlayerId,
       hostNickname: room.hostNickname,
@@ -255,6 +260,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       playerHands: this.getPlayerHands(room),
       myHand: room.state.hands.get(client) ?? [],
       gameStarted: room.gameStarted,
+      gameFinished: room.gameFinished,
+      lastGameResults: room.lastGameResults,
+      gameOver: room.gameOver,
+      gameOverResult: room.gameOverResult,
       openCards: room.state.openCards,
       hostPlayerId: room.hostPlayerId,
       hostNickname: room.hostNickname,
@@ -451,6 +460,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const engine = this.engineFactory.get(room.gameType);
     room.state.deck = engine.createDeck();
     room.gameStarted = true;
+    room.gameFinished = false;
+    room.lastGameResults = undefined;
+    room.gameOver = false;
+    room.gameOverResult = null;
 
     // 게임 상태 초기화
     room.state.openCards = [];
@@ -499,6 +512,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         playerHands: this.getPlayerHands(room),
         openCards: room.state.openCards,
         chips: room.state.chips,
+        winLossRecord: Object.fromEntries(room.state.winLossRecord),
+        gameOver: room.gameOver,
+        gameOverResult: room.gameOverResult,
       });
     });
   }
@@ -723,6 +739,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         room.gameStarted = false;
       }
 
+      room.gameFinished = true;
+      room.lastGameResults = playerResults;
+      room.gameOver = gameOver;
+      room.gameOverResult = gameOverResult;
+
       this.broadcastToRoom(roomName, 'gameFinished', {
         roomName,
         finalChips: room.state.chips,
@@ -879,7 +900,316 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       // winLossRecord 복원
       room.state.winLossRecord = savedWinLossRecord;
+
+      // 복원된 winLossRecord를 클라이언트에 다시 전송
+      room.clients.forEach((playerClient) => {
+        this.sendToClient(playerClient, 'gameStarted', {
+          roomName,
+          deck: room.state.deck,
+          myHand: room.state.hands.get(playerClient) ?? [],
+          playerHands: this.getPlayerHands(room),
+          openCards: room.state.openCards,
+          chips: room.state.chips,
+          winLossRecord: Object.fromEntries(room.state.winLossRecord),
+          gameOver: room.gameOver,
+          gameOverResult: room.gameOverResult,
+        });
+      });
     }
+  }
+
+  @SubscribeMessage('testSuccess')
+  handleTestSuccess(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    const { roomName } = data;
+    const room = this.rooms.get(roomName);
+
+    if (!room || !room.clients.has(client)) return;
+    if (!room.gameStarted) return;
+
+    const engine = this.engineFactory.get(room.gameType);
+
+    // 칩이 없으면 생성
+    if (room.state.chips.length === 0) {
+      room.state.chips = Array.from({ length: room.clients.size }, (_, i) => ({
+        number: i + 1,
+        state: 0,
+        owner: null,
+      }));
+    }
+
+    // 각 플레이어에게 카드 2장씩 배분 (성공 족보용)
+    const testCards = [
+      // A, A - 원페어
+      { type: 'spades' as const, value: 1, image: '/images/cards/spades_ace.svg', name: 'spades_ace' },
+      { type: 'hearts' as const, value: 1, image: '/images/cards/hearts_ace.svg', name: 'hearts_ace' },
+      // 2, 2 - 원페어
+      { type: 'spades' as const, value: 2, image: '/images/cards/spades_2.svg', name: 'spades_2' },
+      { type: 'hearts' as const, value: 2, image: '/images/cards/hearts_2.svg', name: 'hearts_2' },
+      // 3, 3 - 원페어
+      { type: 'spades' as const, value: 3, image: '/images/cards/spades_3.svg', name: 'spades_3' },
+      { type: 'hearts' as const, value: 3, image: '/images/cards/hearts_3.svg', name: 'hearts_3' },
+      // 4, 4 - 원페어
+      { type: 'spades' as const, value: 4, image: '/images/cards/spades_4.svg', name: 'spades_4' },
+      { type: 'hearts' as const, value: 4, image: '/images/cards/hearts_4.svg', name: 'hearts_4' },
+      // 5, 5 - 원페어
+      { type: 'spades' as const, value: 5, image: '/images/cards/spades_5.svg', name: 'spades_5' },
+      { type: 'hearts' as const, value: 5, image: '/images/cards/hearts_5.svg', name: 'hearts_5' },
+      // 6, 6 - 원페어
+      { type: 'spades' as const, value: 6, image: '/images/cards/spades_6.svg', name: 'spades_6' },
+      { type: 'hearts' as const, value: 6, image: '/images/cards/hearts_6.svg', name: 'hearts_6' },
+    ];
+
+    // 오픈 카드 6장 (스텝 4까지 완료)
+    room.state.openCards = [
+      { type: 'clubs' as const, value: 7, image: '/images/cards/clubs_7.svg', name: 'clubs_7' },
+      { type: 'diamonds' as const, value: 8, image: '/images/cards/diamonds_8.svg', name: 'diamonds_8' },
+      { type: 'clubs' as const, value: 9, image: '/images/cards/clubs_9.svg', name: 'clubs_9' },
+      { type: 'diamonds' as const, value: 10, image: '/images/cards/diamonds_10.svg', name: 'diamonds_10' },
+      { type: 'clubs' as const, value: 11, image: '/images/cards/clubs_jack.svg', name: 'clubs_jack' },
+      { type: 'diamonds' as const, value: 12, image: '/images/cards/diamonds_queen.svg', name: 'diamonds_queen' },
+    ];
+
+    // 각 플레이어에게 카드 2장씩 배분
+    let cardIndex = 0;
+    for (const playerClient of room.state.playerOrder) {
+      const hand = [testCards[cardIndex], testCards[cardIndex + 1]];
+      room.state.hands.set(playerClient, hand);
+      cardIndex += 2;
+    }
+
+    // 칩을 플레이어 순서대로 배분 (1 < 2 < 3 < ... 순서로 성공)
+    for (let i = 0; i < room.state.chips.length; i++) {
+      const playerClient = room.state.playerOrder[i];
+      const playerId = room.playerIds.get(playerClient) ?? '';
+      room.state.chips[i].owner = playerId;
+
+      // previousChips에 모든 스텝의 칩 기록
+      const chipNumber = room.state.chips[i].number;
+      room.state.previousChips.set(playerId, [chipNumber, chipNumber, chipNumber, chipNumber]);
+    }
+
+    // 스텝 4로 설정
+    room.state.currentStep = 4;
+
+    // 칩 상태를 red로 (스텝 4)
+    for (const chip of room.state.chips) {
+      chip.state = 3;
+    }
+
+    // playerResults 생성
+    const playerResults = room.state.playerOrder.map((playerClient) => {
+      const playerId = room.playerIds.get(playerClient) ?? '';
+      const nickname = room.nicknames.get(playerClient) ?? '';
+      const hand = room.state.hands.get(playerClient) ?? [];
+      const playerPrevChips = room.state.previousChips.get(playerId) ?? [];
+
+      return {
+        playerId,
+        nickname,
+        hand,
+        chips: playerPrevChips,
+      };
+    });
+
+    // 성공으로 기록
+    const isWinner = true;
+    for (const result of playerResults) {
+      const record = room.state.winLossRecord.get(result.playerId) || [];
+      if (record.length >= 5) {
+        record.shift();
+      }
+      record.push(isWinner);
+      room.state.winLossRecord.set(result.playerId, record);
+    }
+
+    // 준비 상태 초기화
+    room.state.playerReady.clear();
+
+    // 게임 오버 체크
+    const samplePlayerId = playerResults[0]?.playerId;
+    const sampleRecord = samplePlayerId
+      ? room.state.winLossRecord.get(samplePlayerId) || []
+      : [];
+    const totalWins = sampleRecord.filter((r) => r === true).length;
+    const totalLosses = sampleRecord.filter((r) => r === false).length;
+    const gameOver = totalWins >= 3 || totalLosses >= 3;
+    const gameOverResult = gameOver
+      ? totalWins >= 3
+        ? 'victory'
+        : 'defeat'
+      : null;
+
+    if (gameOver) {
+      room.gameStarted = false;
+    }
+
+    room.gameFinished = true;
+    room.lastGameResults = playerResults;
+    room.gameOver = gameOver;
+    room.gameOverResult = gameOverResult;
+
+    this.broadcastToRoom(roomName, 'gameFinished', {
+      roomName,
+      finalChips: room.state.chips,
+      previousChips: Object.fromEntries(room.state.previousChips),
+      openCards: room.state.openCards,
+      playerResults,
+      winLossRecord: Object.fromEntries(room.state.winLossRecord),
+      gameOver,
+      gameOverResult,
+    });
+
+    console.log(`[테스트] ${roomName}: 성공 라운드로 즉시 완료`);
+  }
+
+  @SubscribeMessage('testFail')
+  handleTestFail(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    const { roomName } = data;
+    const room = this.rooms.get(roomName);
+
+    if (!room || !room.clients.has(client)) return;
+    if (!room.gameStarted) return;
+
+    const engine = this.engineFactory.get(room.gameType);
+
+    // 칩이 없으면 생성
+    if (room.state.chips.length === 0) {
+      room.state.chips = Array.from({ length: room.clients.size }, (_, i) => ({
+        number: i + 1,
+        state: 0,
+        owner: null,
+      }));
+    }
+
+    // 각 플레이어에게 카드 2장씩 배분 (실패 족보용 - 역순)
+    const testCards = [
+      // K, K - 원페어 (높음)
+      { type: 'spades' as const, value: 13, image: '/images/cards/spades_king.svg', name: 'spades_king' },
+      { type: 'hearts' as const, value: 13, image: '/images/cards/hearts_king.svg', name: 'hearts_king' },
+      // Q, Q - 원페어
+      { type: 'spades' as const, value: 12, image: '/images/cards/spades_queen.svg', name: 'spades_queen' },
+      { type: 'hearts' as const, value: 12, image: '/images/cards/hearts_queen.svg', name: 'hearts_queen' },
+      // J, J - 원페어
+      { type: 'spades' as const, value: 11, image: '/images/cards/spades_jack.svg', name: 'spades_jack' },
+      { type: 'hearts' as const, value: 11, image: '/images/cards/hearts_jack.svg', name: 'hearts_jack' },
+      // 10, 10 - 원페어
+      { type: 'spades' as const, value: 10, image: '/images/cards/spades_10.svg', name: 'spades_10' },
+      { type: 'hearts' as const, value: 10, image: '/images/cards/hearts_10.svg', name: 'hearts_10' },
+      // 9, 9 - 원페어
+      { type: 'spades' as const, value: 9, image: '/images/cards/spades_9.svg', name: 'spades_9' },
+      { type: 'hearts' as const, value: 9, image: '/images/cards/hearts_9.svg', name: 'hearts_9' },
+      // 8, 8 - 원페어 (낮음)
+      { type: 'spades' as const, value: 8, image: '/images/cards/spades_8.svg', name: 'spades_8' },
+      { type: 'hearts' as const, value: 8, image: '/images/cards/hearts_8.svg', name: 'hearts_8' },
+    ];
+
+    // 오픈 카드 6장
+    room.state.openCards = [
+      { type: 'clubs' as const, value: 2, image: '/images/cards/clubs_2.svg', name: 'clubs_2' },
+      { type: 'diamonds' as const, value: 3, image: '/images/cards/diamonds_3.svg', name: 'diamonds_3' },
+      { type: 'clubs' as const, value: 4, image: '/images/cards/clubs_4.svg', name: 'clubs_4' },
+      { type: 'diamonds' as const, value: 5, image: '/images/cards/diamonds_5.svg', name: 'diamonds_5' },
+      { type: 'clubs' as const, value: 6, image: '/images/cards/clubs_6.svg', name: 'clubs_6' },
+      { type: 'diamonds' as const, value: 7, image: '/images/cards/diamonds_7.svg', name: 'diamonds_7' },
+    ];
+
+    // 각 플레이어에게 카드 2장씩 배분
+    let cardIndex = 0;
+    for (const playerClient of room.state.playerOrder) {
+      const hand = [testCards[cardIndex], testCards[cardIndex + 1]];
+      room.state.hands.set(playerClient, hand);
+      cardIndex += 2;
+    }
+
+    // 칩을 플레이어 순서대로 배분 (K > Q > J... 역순이므로 실패)
+    for (let i = 0; i < room.state.chips.length; i++) {
+      const playerClient = room.state.playerOrder[i];
+      const playerId = room.playerIds.get(playerClient) ?? '';
+      room.state.chips[i].owner = playerId;
+
+      // previousChips에 모든 스텝의 칩 기록
+      const chipNumber = room.state.chips[i].number;
+      room.state.previousChips.set(playerId, [chipNumber, chipNumber, chipNumber, chipNumber]);
+    }
+
+    // 스텝 4로 설정
+    room.state.currentStep = 4;
+
+    // 칩 상태를 red로 (스텝 4)
+    for (const chip of room.state.chips) {
+      chip.state = 3;
+    }
+
+    // playerResults 생성
+    const playerResults = room.state.playerOrder.map((playerClient) => {
+      const playerId = room.playerIds.get(playerClient) ?? '';
+      const nickname = room.nicknames.get(playerClient) ?? '';
+      const hand = room.state.hands.get(playerClient) ?? [];
+      const playerPrevChips = room.state.previousChips.get(playerId) ?? [];
+
+      return {
+        playerId,
+        nickname,
+        hand,
+        chips: playerPrevChips,
+      };
+    });
+
+    // 실패로 기록
+    const isWinner = false;
+    for (const result of playerResults) {
+      const record = room.state.winLossRecord.get(result.playerId) || [];
+      if (record.length >= 5) {
+        record.shift();
+      }
+      record.push(isWinner);
+      room.state.winLossRecord.set(result.playerId, record);
+    }
+
+    // 준비 상태 초기화
+    room.state.playerReady.clear();
+
+    // 게임 오버 체크
+    const samplePlayerId = playerResults[0]?.playerId;
+    const sampleRecord = samplePlayerId
+      ? room.state.winLossRecord.get(samplePlayerId) || []
+      : [];
+    const totalWins = sampleRecord.filter((r) => r === true).length;
+    const totalLosses = sampleRecord.filter((r) => r === false).length;
+    const gameOver = totalWins >= 3 || totalLosses >= 3;
+    const gameOverResult = gameOver
+      ? totalWins >= 3
+        ? 'victory'
+        : 'defeat'
+      : null;
+
+    if (gameOver) {
+      room.gameStarted = false;
+    }
+
+    room.gameFinished = true;
+    room.lastGameResults = playerResults;
+    room.gameOver = gameOver;
+    room.gameOverResult = gameOverResult;
+
+    this.broadcastToRoom(roomName, 'gameFinished', {
+      roomName,
+      finalChips: room.state.chips,
+      previousChips: Object.fromEntries(room.state.previousChips),
+      openCards: room.state.openCards,
+      playerResults,
+      winLossRecord: Object.fromEntries(room.state.winLossRecord),
+      gameOver,
+      gameOverResult,
+    });
+
+    console.log(`[테스트] ${roomName}: 실패 라운드로 즉시 완료`);
   }
 
   @SubscribeMessage('message')
