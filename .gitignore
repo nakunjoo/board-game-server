@@ -56,3 +56,12 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Deployment scripts (contain sensitive info like project IDs)
+deploy-gcp.sh
+quick-deploy.sh
+get-docker.sh
+*.tar.gz
+
+# Deployment documentation (optional, can be committed)
+# GCP-DEPLOY-GUIDE.md
