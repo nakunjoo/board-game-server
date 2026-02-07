@@ -586,20 +586,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     // 모든 클라이언트에게 업데이트 브로드캐스트
+    const isStolen = previousOwnerId && previousOwnerId !== playerId;
     this.broadcastToRoom(roomName, 'chipSelected', {
       roomName,
       chips: room.state.chips,
       readyPlayers: Array.from(room.state.playerReady),
-      stolenFrom:
-        previousOwnerId && previousOwnerId !== playerId
-          ? previousOwnerId
-          : undefined,
-      stolenBy:
-        previousOwnerId && previousOwnerId !== playerId ? playerId : undefined,
-      chipNumber:
-        previousOwnerId && previousOwnerId !== playerId
-          ? chipNumber
-          : undefined,
+      stolenFrom: isStolen ? previousOwnerId : undefined,
+      stolenBy: isStolen ? playerId : undefined,
+      stolenFromName: isStolen
+        ? this.getNicknameByPlayerId(room, previousOwnerId)
+        : undefined,
+      stolenByName: isStolen ? nickname : undefined,
+      chipNumber: isStolen ? chipNumber : undefined,
     });
 
     // 준비 상태가 해제된 플레이어가 있으면 알림
@@ -1394,6 +1392,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         chips: result.chips,
         score: handResult.score,
         tiebreakers: handResult.tiebreakers,
+        detailName: handResult.detailName,
       };
     });
 
@@ -1412,9 +1411,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
 
     // 칩 번호 순서대로 족보가 오름차순인지 확인
+    // 같은 detailName이면 동일 취급 (같은 족보명이면 순서 상관없이 OK)
     for (let i = 0; i < sortedByChip.length - 1; i++) {
       const current = sortedByChip[i];
       const next = sortedByChip[i + 1];
+
+      // 같은 족보명이면 동일 취급 -> 통과
+      if (current.detailName === next.detailName) {
+        continue;
+      }
 
       // 점수 비교
       if (current.score > next.score) {
@@ -1469,7 +1474,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private evaluateHand(
     myCards: any[],
     openCards: any[],
-  ): { score: number; tiebreakers: number[] } {
+  ): { score: number; tiebreakers: number[]; detailName: string } {
     const allCards = [...myCards, ...openCards];
 
     const HAND_SCORES = {
@@ -1486,6 +1491,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     };
 
     const getRankValue = (value: number) => (value === 1 ? 14 : value);
+
+    const getValueDisplayName = (value: number): string => {
+      if (value === 1) return 'A';
+      if (value === 11) return 'J';
+      if (value === 12) return 'Q';
+      if (value === 13) return 'K';
+      return value.toString();
+    };
 
     const countRanks = (cards: any[]) => {
       const counts = new Map<number, any[]>();
@@ -1561,13 +1574,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             return {
               score: HAND_SCORES['royal-straight-flush'],
               tiebreakers: [14],
+              detailName: '10-J-Q-K-A 로얄 스트레이트 플러시',
             };
           }
+          const sfTop = Math.max(...suitCards.map((c) => getRankValue(c.value)));
           return {
             score: HAND_SCORES['straight-flush'],
-            tiebreakers: [
-              Math.max(...suitCards.map((c) => getRankValue(c.value))),
-            ],
+            tiebreakers: [sfTop],
+            detailName: `${getValueDisplayName(sfTop === 14 ? 1 : sfTop)} 탑 스트레이트 플러시`,
           };
         }
       }
@@ -1581,9 +1595,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // 포카드
     if (countArray.length > 0 && countArray[0][1].length === 4) {
+      const fkValue = countArray[0][0];
       return {
         score: HAND_SCORES['four-of-a-kind'],
-        tiebreakers: [getRankValue(countArray[0][0])],
+        tiebreakers: [getRankValue(fkValue)],
+        detailName: `${getValueDisplayName(fkValue)} 포카드`,
       };
     }
 
@@ -1593,12 +1609,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       countArray[0][1].length === 3 &&
       countArray[1][1].length >= 2
     ) {
+      const tripleValue = countArray[0][0];
+      const pairValue = countArray[1][0];
       return {
         score: HAND_SCORES['full-house'],
         tiebreakers: [
-          getRankValue(countArray[0][0]),
-          getRankValue(countArray[1][0]),
+          getRankValue(tripleValue),
+          getRankValue(pairValue),
         ],
+        detailName: `${getValueDisplayName(tripleValue)} 풀하우스 (${getValueDisplayName(pairValue)} 페어)`,
       };
     }
 
@@ -1611,7 +1630,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             .map((c) => getRankValue(c.value))
             .sort((a, b) => b - a)
             .slice(0, 5);
-          return { score: HAND_SCORES['flush'], tiebreakers: sorted };
+          const topRank = sorted[0];
+          return {
+            score: HAND_SCORES['flush'],
+            tiebreakers: sorted,
+            detailName: `${getValueDisplayName(topRank === 14 ? 1 : topRank)} 탑 플러시`,
+          };
         }
       }
     }
@@ -1624,11 +1648,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const hasAce = sortedCards.some((c) => c.value === 1);
       const has5 = sortedCards.some((c) => c.value === 5);
       const isBackStraight = hasAce && has5;
+      const topValue = isBackStraight
+        ? 5
+        : Math.max(...allCards.map((c) => getRankValue(c.value)));
       return {
         score: HAND_SCORES['straight'],
         tiebreakers: isBackStraight
           ? [5]
-          : [Math.max(...allCards.map((c) => getRankValue(c.value)))],
+          : [topValue],
+        detailName: `${getValueDisplayName(topValue === 14 ? 1 : topValue)} 탑 스트레이트`,
       };
     }
 
@@ -1645,7 +1673,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           (a, b) => getRankValue(b.value) - getRankValue(a.value),
         );
         const tiebreakers = sortedMyCards.map((c) => getRankValue(c.value));
-        return { score: HAND_SCORES['high-card'], tiebreakers };
+        const myHighCard = sortedMyCards[0];
+        return {
+          score: HAND_SCORES['high-card'],
+          tiebreakers,
+          detailName: myHighCard ? `${getValueDisplayName(myHighCard.value)} 하이` : '하이카드',
+        };
       }
 
       const kickers = allCards
@@ -1656,6 +1689,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return {
         score: HAND_SCORES['three-of-a-kind'],
         tiebreakers: [getRankValue(value), ...kickers],
+        detailName: `${getValueDisplayName(value)} 트리플`,
       };
     }
 
@@ -1677,7 +1711,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           (a, b) => getRankValue(b.value) - getRankValue(a.value),
         );
         const tiebreakers = sortedMyCards.map((c) => getRankValue(c.value));
-        return { score: HAND_SCORES['high-card'], tiebreakers };
+        const myHighCard = sortedMyCards[0];
+        return {
+          score: HAND_SCORES['high-card'],
+          tiebreakers,
+          detailName: myHighCard ? `${getValueDisplayName(myHighCard.value)} 하이` : '하이카드',
+        };
       }
 
       const kicker = allCards
@@ -1690,6 +1729,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           getRankValue(lowValue),
           kicker ? getRankValue(kicker.value) : 0,
         ],
+        detailName: `${getValueDisplayName(highValue)}-${getValueDisplayName(lowValue)} 투페어`,
       };
     }
 
@@ -1706,7 +1746,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           (a, b) => getRankValue(b.value) - getRankValue(a.value),
         );
         const tiebreakers = sortedMyCards.map((c) => getRankValue(c.value));
-        return { score: HAND_SCORES['high-card'], tiebreakers };
+        const myHighCard = sortedMyCards[0];
+        return {
+          score: HAND_SCORES['high-card'],
+          tiebreakers,
+          detailName: myHighCard ? `${getValueDisplayName(myHighCard.value)} 하이` : '하이카드',
+        };
       }
 
       const kickers = allCards
@@ -1717,16 +1762,22 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return {
         score: HAND_SCORES['one-pair'],
         tiebreakers: [getRankValue(value), ...kickers],
+        detailName: `${getValueDisplayName(value)} 원페어`,
       };
     }
 
     // 하이카드
+    const myCardsSorted = myCards.sort(
+      (a, b) => getRankValue(b.value) - getRankValue(a.value),
+    );
+    const highCard = myCardsSorted.length > 0 ? myCardsSorted[0] : allCards.sort((a, b) => getRankValue(b.value) - getRankValue(a.value))[0];
     const allSorted = allCards
       .sort((a, b) => getRankValue(b.value) - getRankValue(a.value))
       .slice(0, 5);
     return {
       score: HAND_SCORES['high-card'],
       tiebreakers: allSorted.map((c) => getRankValue(c.value)),
+      detailName: `${getValueDisplayName(highCard.value)} 하이카드`,
     };
   }
 }
