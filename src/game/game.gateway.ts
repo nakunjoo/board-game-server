@@ -111,6 +111,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       hostPlayerId: playerId,
       hostNickname: nickname,
       password: password || undefined,
+      hasSuccessHistory: false, // 성공 이력 없음, 첫 라운드는 2장
     };
     this.rooms.set(name, room);
     this.clientRooms.get(client)?.add(name);
@@ -486,9 +487,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       owner: null,
     }));
 
-    // 스텝 1: 오픈카드 없이 핸드 2장만 배분
-    // 모든 플레이어에게 카드 2장씩 나눠주기
-    for (let round = 0; round < 2; round++) {
+    // 스텝 1: 오픈카드 없이 핸드 배분
+    // 한 번이라도 성공한 이력이 있으면 3장, 없으면 2장
+    const cardsPerPlayer = room.hasSuccessHistory ? 3 : 2;
+    console.log(
+      `Dealing ${cardsPerPlayer} cards per player (hasSuccessHistory: ${room.hasSuccessHistory})`,
+    );
+
+    for (let round = 0; round < cardsPerPlayer; round++) {
       for (const playerClient of room.state.playerOrder) {
         if (room.state.deck.length > 0) {
           const card = room.state.deck.pop()!;
@@ -741,6 +747,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       room.lastGameResults = playerResults;
       room.gameOver = gameOver;
       room.gameOverResult = gameOverResult;
+
+      // 한 번이라도 성공하면 이후로 계속 3장
+      if (isWinner && !room.hasSuccessHistory) {
+        room.hasSuccessHistory = true;
+        console.log(`[성공 이력 기록] ${roomName}: 다음 라운드부터 손패 3장`);
+      }
 
       this.broadcastToRoom(roomName, 'gameFinished', {
         roomName,
