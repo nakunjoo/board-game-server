@@ -19,6 +19,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   server: Server;
 
   private static readonly DISCONNECT_GRACE_MS = 5000;
+  private static readonly CARD_IMAGE_BASE_URL =
+    process.env.CARD_IMAGE_BASE_URL ||
+    'https://storage.googleapis.com/teak-banner-431004-n3.appspot.com/images/cards';
 
   private clients: Set<WebSocket> = new Set();
   private rooms: Map<string, Room> = new Map();
@@ -111,7 +114,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       hostPlayerId: playerId,
       hostNickname: nickname,
       password: password || undefined,
-      hasSuccessHistory: false, // 성공 이력 없음, 첫 라운드는 2장
+      successCount: 0, // 성공 횟수 0, 첫 라운드는 2장
     };
     this.rooms.set(name, room);
     this.clientRooms.get(client)?.add(name);
@@ -488,10 +491,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }));
 
     // 스텝 1: 오픈카드 없이 핸드 배분
-    // 한 번이라도 성공한 이력이 있으면 3장, 없으면 2장
-    const cardsPerPlayer = room.hasSuccessHistory ? 3 : 2;
+    // 성공 횟수가 2회 이상이면 3장, 아니면 2장
+    const cardsPerPlayer = (room.successCount ?? 0) >= 2 ? 3 : 2;
     console.log(
-      `Dealing ${cardsPerPlayer} cards per player (hasSuccessHistory: ${room.hasSuccessHistory})`,
+      `Dealing ${cardsPerPlayer} cards per player (successCount: ${room.successCount ?? 0})`,
     );
 
     for (let round = 0; round < cardsPerPlayer; round++) {
@@ -748,10 +751,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       room.gameOver = gameOver;
       room.gameOverResult = gameOverResult;
 
-      // 한 번이라도 성공하면 이후로 계속 3장
-      if (isWinner && !room.hasSuccessHistory) {
-        room.hasSuccessHistory = true;
-        console.log(`[성공 이력 기록] ${roomName}: 다음 라운드부터 손패 3장`);
+      // 성공 시 성공 횟수 증가
+      if (isWinner) {
+        room.successCount = (room.successCount ?? 0) + 1;
+        console.log(
+          `[성공 기록] ${roomName}: 성공 횟수 ${room.successCount}${room.successCount >= 2 ? ' (다음 라운드부터 손패 3장)' : ''}`,
+        );
       }
 
       this.broadcastToRoom(roomName, 'gameFinished', {
@@ -951,35 +956,36 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     // 각 플레이어에게 카드 2장씩 배분 (성공 족보용)
+    const baseUrl = GameGateway.CARD_IMAGE_BASE_URL;
     const testCards = [
       // A, A - 원페어
-      { type: 'spades' as const, value: 1, image: '/images/cards/spades_ace.svg', name: 'spades_ace' },
-      { type: 'hearts' as const, value: 1, image: '/images/cards/hearts_ace.svg', name: 'hearts_ace' },
+      { type: 'spades' as const, value: 1, image: `${baseUrl}/spades_ace.svg`, name: 'spades_ace' },
+      { type: 'hearts' as const, value: 1, image: `${baseUrl}/hearts_ace.svg`, name: 'hearts_ace' },
       // 2, 2 - 원페어
-      { type: 'spades' as const, value: 2, image: '/images/cards/spades_2.svg', name: 'spades_2' },
-      { type: 'hearts' as const, value: 2, image: '/images/cards/hearts_2.svg', name: 'hearts_2' },
+      { type: 'spades' as const, value: 2, image: `${baseUrl}/spades_2.svg`, name: 'spades_2' },
+      { type: 'hearts' as const, value: 2, image: `${baseUrl}/hearts_2.svg`, name: 'hearts_2' },
       // 3, 3 - 원페어
-      { type: 'spades' as const, value: 3, image: '/images/cards/spades_3.svg', name: 'spades_3' },
-      { type: 'hearts' as const, value: 3, image: '/images/cards/hearts_3.svg', name: 'hearts_3' },
+      { type: 'spades' as const, value: 3, image: `${baseUrl}/spades_3.svg`, name: 'spades_3' },
+      { type: 'hearts' as const, value: 3, image: `${baseUrl}/hearts_3.svg`, name: 'hearts_3' },
       // 4, 4 - 원페어
-      { type: 'spades' as const, value: 4, image: '/images/cards/spades_4.svg', name: 'spades_4' },
-      { type: 'hearts' as const, value: 4, image: '/images/cards/hearts_4.svg', name: 'hearts_4' },
+      { type: 'spades' as const, value: 4, image: `${baseUrl}/spades_4.svg`, name: 'spades_4' },
+      { type: 'hearts' as const, value: 4, image: `${baseUrl}/hearts_4.svg`, name: 'hearts_4' },
       // 5, 5 - 원페어
-      { type: 'spades' as const, value: 5, image: '/images/cards/spades_5.svg', name: 'spades_5' },
-      { type: 'hearts' as const, value: 5, image: '/images/cards/hearts_5.svg', name: 'hearts_5' },
+      { type: 'spades' as const, value: 5, image: `${baseUrl}/spades_5.svg`, name: 'spades_5' },
+      { type: 'hearts' as const, value: 5, image: `${baseUrl}/hearts_5.svg`, name: 'hearts_5' },
       // 6, 6 - 원페어
-      { type: 'spades' as const, value: 6, image: '/images/cards/spades_6.svg', name: 'spades_6' },
-      { type: 'hearts' as const, value: 6, image: '/images/cards/hearts_6.svg', name: 'hearts_6' },
+      { type: 'spades' as const, value: 6, image: `${baseUrl}/spades_6.svg`, name: 'spades_6' },
+      { type: 'hearts' as const, value: 6, image: `${baseUrl}/hearts_6.svg`, name: 'hearts_6' },
     ];
 
     // 오픈 카드 6장 (스텝 4까지 완료)
     room.state.openCards = [
-      { type: 'clubs' as const, value: 7, image: '/images/cards/clubs_7.svg', name: 'clubs_7' },
-      { type: 'diamonds' as const, value: 8, image: '/images/cards/diamonds_8.svg', name: 'diamonds_8' },
-      { type: 'clubs' as const, value: 9, image: '/images/cards/clubs_9.svg', name: 'clubs_9' },
-      { type: 'diamonds' as const, value: 10, image: '/images/cards/diamonds_10.svg', name: 'diamonds_10' },
-      { type: 'clubs' as const, value: 11, image: '/images/cards/clubs_jack.svg', name: 'clubs_jack' },
-      { type: 'diamonds' as const, value: 12, image: '/images/cards/diamonds_queen.svg', name: 'diamonds_queen' },
+      { type: 'clubs' as const, value: 7, image: `${baseUrl}/clubs_7.svg`, name: 'clubs_7' },
+      { type: 'diamonds' as const, value: 8, image: `${baseUrl}/diamonds_8.svg`, name: 'diamonds_8' },
+      { type: 'clubs' as const, value: 9, image: `${baseUrl}/clubs_9.svg`, name: 'clubs_9' },
+      { type: 'diamonds' as const, value: 10, image: `${baseUrl}/diamonds_10.svg`, name: 'diamonds_10' },
+      { type: 'clubs' as const, value: 11, image: `${baseUrl}/clubs_jack.svg`, name: 'clubs_jack' },
+      { type: 'diamonds' as const, value: 12, image: `${baseUrl}/diamonds_queen.svg`, name: 'diamonds_queen' },
     ];
 
     // 각 플레이어에게 카드 2장씩 배분
@@ -1098,35 +1104,36 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     // 각 플레이어에게 카드 2장씩 배분 (실패 족보용 - 역순)
+    const baseUrl = GameGateway.CARD_IMAGE_BASE_URL;
     const testCards = [
       // K, K - 원페어 (높음)
-      { type: 'spades' as const, value: 13, image: '/images/cards/spades_king.svg', name: 'spades_king' },
-      { type: 'hearts' as const, value: 13, image: '/images/cards/hearts_king.svg', name: 'hearts_king' },
+      { type: 'spades' as const, value: 13, image: `${baseUrl}/spades_king.svg`, name: 'spades_king' },
+      { type: 'hearts' as const, value: 13, image: `${baseUrl}/hearts_king.svg`, name: 'hearts_king' },
       // Q, Q - 원페어
-      { type: 'spades' as const, value: 12, image: '/images/cards/spades_queen.svg', name: 'spades_queen' },
-      { type: 'hearts' as const, value: 12, image: '/images/cards/hearts_queen.svg', name: 'hearts_queen' },
+      { type: 'spades' as const, value: 12, image: `${baseUrl}/spades_queen.svg`, name: 'spades_queen' },
+      { type: 'hearts' as const, value: 12, image: `${baseUrl}/hearts_queen.svg`, name: 'hearts_queen' },
       // J, J - 원페어
-      { type: 'spades' as const, value: 11, image: '/images/cards/spades_jack.svg', name: 'spades_jack' },
-      { type: 'hearts' as const, value: 11, image: '/images/cards/hearts_jack.svg', name: 'hearts_jack' },
+      { type: 'spades' as const, value: 11, image: `${baseUrl}/spades_jack.svg`, name: 'spades_jack' },
+      { type: 'hearts' as const, value: 11, image: `${baseUrl}/hearts_jack.svg`, name: 'hearts_jack' },
       // 10, 10 - 원페어
-      { type: 'spades' as const, value: 10, image: '/images/cards/spades_10.svg', name: 'spades_10' },
-      { type: 'hearts' as const, value: 10, image: '/images/cards/hearts_10.svg', name: 'hearts_10' },
+      { type: 'spades' as const, value: 10, image: `${baseUrl}/spades_10.svg`, name: 'spades_10' },
+      { type: 'hearts' as const, value: 10, image: `${baseUrl}/hearts_10.svg`, name: 'hearts_10' },
       // 9, 9 - 원페어
-      { type: 'spades' as const, value: 9, image: '/images/cards/spades_9.svg', name: 'spades_9' },
-      { type: 'hearts' as const, value: 9, image: '/images/cards/hearts_9.svg', name: 'hearts_9' },
+      { type: 'spades' as const, value: 9, image: `${baseUrl}/spades_9.svg`, name: 'spades_9' },
+      { type: 'hearts' as const, value: 9, image: `${baseUrl}/hearts_9.svg`, name: 'hearts_9' },
       // 8, 8 - 원페어 (낮음)
-      { type: 'spades' as const, value: 8, image: '/images/cards/spades_8.svg', name: 'spades_8' },
-      { type: 'hearts' as const, value: 8, image: '/images/cards/hearts_8.svg', name: 'hearts_8' },
+      { type: 'spades' as const, value: 8, image: `${baseUrl}/spades_8.svg`, name: 'spades_8' },
+      { type: 'hearts' as const, value: 8, image: `${baseUrl}/hearts_8.svg`, name: 'hearts_8' },
     ];
 
     // 오픈 카드 6장
     room.state.openCards = [
-      { type: 'clubs' as const, value: 2, image: '/images/cards/clubs_2.svg', name: 'clubs_2' },
-      { type: 'diamonds' as const, value: 3, image: '/images/cards/diamonds_3.svg', name: 'diamonds_3' },
-      { type: 'clubs' as const, value: 4, image: '/images/cards/clubs_4.svg', name: 'clubs_4' },
-      { type: 'diamonds' as const, value: 5, image: '/images/cards/diamonds_5.svg', name: 'diamonds_5' },
-      { type: 'clubs' as const, value: 6, image: '/images/cards/clubs_6.svg', name: 'clubs_6' },
-      { type: 'diamonds' as const, value: 7, image: '/images/cards/diamonds_7.svg', name: 'diamonds_7' },
+      { type: 'clubs' as const, value: 2, image: `${baseUrl}/clubs_2.svg`, name: 'clubs_2' },
+      { type: 'diamonds' as const, value: 3, image: `${baseUrl}/diamonds_3.svg`, name: 'diamonds_3' },
+      { type: 'clubs' as const, value: 4, image: `${baseUrl}/clubs_4.svg`, name: 'clubs_4' },
+      { type: 'diamonds' as const, value: 5, image: `${baseUrl}/diamonds_5.svg`, name: 'diamonds_5' },
+      { type: 'clubs' as const, value: 6, image: `${baseUrl}/clubs_6.svg`, name: 'clubs_6' },
+      { type: 'diamonds' as const, value: 7, image: `${baseUrl}/diamonds_7.svg`, name: 'diamonds_7' },
     ];
 
     // 각 플레이어에게 카드 2장씩 배분

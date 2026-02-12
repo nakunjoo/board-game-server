@@ -57,5 +57,5 @@ export interface Room {
   hostPlayerId: string;
   hostNickname: string;
   password?: string; // 비밀방인 경우 비밀번호
-  hasSuccessHistory?: boolean; // 한 번이라도 성공한 이력이 있는지 (손패 수 결정용)
+  successCount?: number; // 성공 횟수 (손패 수 결정용: 2회 이상이면 3장)
 }

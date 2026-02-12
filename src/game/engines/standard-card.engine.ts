@@ -5,6 +5,9 @@ import { Card, CardType, GameState } from '../game.types';
 @Injectable()
 export class StandardCardEngine implements GameEngine {
   readonly gameType = 'gang';
+  private readonly CARD_IMAGE_BASE_URL =
+    process.env.CARD_IMAGE_BASE_URL ||
+    'https://storage.googleapis.com/teak-banner-431004-n3.appspot.com/images/cards';
 
   createDeck(): Card[] {
     const types: CardType[] = ['clubs', 'diamonds', 'hearts', 'spades'];
@@ -15,7 +18,7 @@ export class StandardCardEngine implements GameEngine {
         return {
           type,
           value,
-          image: `/images/cards/${type}_${valueName}.svg`,
+          image: `${this.CARD_IMAGE_BASE_URL}/${type}_${valueName}.svg`,
           name: `${type}_${valueName}`,
         };
       }),
