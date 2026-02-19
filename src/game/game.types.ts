@@ -1,6 +1,8 @@
 import { WebSocket } from 'ws';
 
-export type CardType = 'clubs' | 'diamonds' | 'hearts' | 'spades';
+export type CardType = 'clubs' | 'diamonds' | 'hearts' | 'spades'
+  | 'pepper' | 'cinnamon' | 'saffron'   // 향신료 3종
+  | 'wild-number' | 'wild-suit';          // 향신료 와일드카드
 
 export interface Card {
   type: CardType;

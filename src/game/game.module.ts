@@ -1,10 +1,13 @@
 import { Module } from '@nestjs/common';
 import { GameGateway } from './game.gateway';
 import { GameEngineFactory } from './game-engine.factory';
+import { GameContext } from './game.context';
+import { GangHandler } from './games/gang/gang.handler';
+import { SpiceHandler } from './games/spice/spice.handler';
 import { StandardCardEngine } from './engines/standard-card.engine';
+import { SpiceEngine } from './engines/spice.engine';
 
-// 새 게임 엔진을 추가할 때 이 배열에 추가하면 됩니다
-const ENGINES = [StandardCardEngine];
+const ENGINES = [StandardCardEngine, SpiceEngine];
 
 @Module({
   providers: [
@@ -15,6 +18,9 @@ const ENGINES = [StandardCardEngine];
         new GameEngineFactory(engines),
       inject: ENGINES,
     },
+    GameContext,
+    GangHandler,
+    SpiceHandler,
     GameGateway,
   ],
 })
