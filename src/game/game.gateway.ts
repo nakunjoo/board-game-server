@@ -214,6 +214,22 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         readyPlayers: Array.from(room.state.playerReady),
         previousChips: Object.fromEntries(room.state.previousChips),
         winLossRecord: Object.fromEntries(room.state.winLossRecord),
+        // Spice 게임 재연결 상태
+        currentTurnPlayerId: room.state.currentTurnPlayerId ?? null,
+        currentSuit: room.state.currentSuit ?? null,
+        currentNumber: room.state.currentNumber ?? 0,
+        tableStackSize: room.state.tableStack?.length ?? 0,
+        trophies: room.state.trophies ? Object.fromEntries(room.state.trophies) : {},
+        challengePhase: room.state.challengePhase
+          ? {
+              playerId: room.state.challengePhase.playerId,
+              nickname: room.nicknames.get(
+                this.ctx.findClientByPlayerId(room, room.state.challengePhase.playerId) as WebSocket
+              ) ?? '',
+              declaredSuit: room.state.challengePhase.declaredSuit,
+              declaredNumber: room.state.challengePhase.declaredNumber,
+            }
+          : null,
       });
 
       this.ctx.broadcastToRoom(
@@ -253,6 +269,22 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         readyPlayers: Array.from(room.state.playerReady),
         previousChips: Object.fromEntries(room.state.previousChips),
         winLossRecord: Object.fromEntries(room.state.winLossRecord),
+        // Spice 게임 재연결 상태
+        currentTurnPlayerId: room.state.currentTurnPlayerId ?? null,
+        currentSuit: room.state.currentSuit ?? null,
+        currentNumber: room.state.currentNumber ?? 0,
+        tableStackSize: room.state.tableStack?.length ?? 0,
+        trophies: room.state.trophies ? Object.fromEntries(room.state.trophies) : {},
+        challengePhase: room.state.challengePhase
+          ? {
+              playerId: room.state.challengePhase.playerId,
+              nickname: room.nicknames.get(
+                this.ctx.findClientByPlayerId(room, room.state.challengePhase.playerId) as WebSocket
+              ) ?? '',
+              declaredSuit: room.state.challengePhase.declaredSuit,
+              declaredNumber: room.state.challengePhase.declaredNumber,
+            }
+          : null,
       });
       return;
     }
@@ -460,6 +492,38 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: WebSocket,
   ): void {
     this.gangHandler.handleDrawCard(data, client);
+  }
+
+  @SubscribeMessage('drawFirstCard')
+  handleDrawFirstCard(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.spiceHandler.handleDrawFirstCard(data, client);
+  }
+
+  @SubscribeMessage('playCard')
+  handlePlayCard(
+    @MessageBody() data: { roomName: string; cardIndex: number; declaredSuit: string; declaredNumber: number },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.spiceHandler.handlePlayCard(data, client);
+  }
+
+  @SubscribeMessage('pass')
+  handlePass(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.spiceHandler.handlePass(data, client);
+  }
+
+  @SubscribeMessage('challenge')
+  handleChallenge(
+    @MessageBody() data: { roomName: string; challengeType: 'number' | 'suit' },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.spiceHandler.handleChallenge(data, client);
   }
 
   @SubscribeMessage('selectChip')
