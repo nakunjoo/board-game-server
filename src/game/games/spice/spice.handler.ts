@@ -27,6 +27,12 @@ export class SpiceHandler {
       return;
     }
 
+    const playerId = room.playerIds.get(client);
+    if (playerId !== room.hostPlayerId) {
+      this.ctx.sendToClient(client, 'error', { message: '방장만 게임을 시작할 수 있습니다' });
+      return;
+    }
+
     // 선뽑기 시작: 1~10 중 랜덤 카드 배정
     room.state.firstDraw = new Map(); // playerId → 뽑은 숫자
     room.state.firstDrawDone = new Set(); // 뽑기 완료한 playerId
@@ -339,7 +345,7 @@ export class SpiceHandler {
     if (handEmptyPlayerId) {
       if (!room.state.trophies) room.state.trophies = new Map();
       const current = room.state.trophies.get(handEmptyPlayerId) ?? 0;
-      const newCount = Math.min(current + 1, 3);
+      const newCount = Math.min(current + 1, 2);
       room.state.trophies.set(handEmptyPlayerId, newCount);
       const nickname = this.ctx.getNicknameByPlayerId(room, handEmptyPlayerId);
       trophyEvent = { playerId: handEmptyPlayerId, nickname, trophyCount: newCount };
@@ -368,14 +374,15 @@ export class SpiceHandler {
 
     const trophiesObj = room.state.trophies ? Object.fromEntries(room.state.trophies) : {};
 
-    // 트로피 지급 후 게임 종료 조건 체크
-    if (trophyEvent && this.checkTrophyGameOver(roomName, trophiesObj)) return;
-    // 덱 소진 체크
-    if (this.checkDeckEmpty(roomName)) return;
-
     console.log(
       `[Spice] Challenge expired in '${roomName}'. Next turn: ${nextPlayerId}`,
     );
+
+    const wonCardsMapExp = room.state.wonCards ?? new Map();
+    const wonCardCountsExp: Record<string, number> = {};
+    for (const [pid, cards] of wonCardsMapExp.entries()) {
+      wonCardCountsExp[pid] = cards.length;
+    }
 
     this.ctx.broadcastToRoom(roomName, 'challengeExpired', {
       roomName,
@@ -387,7 +394,21 @@ export class SpiceHandler {
       deck: room.state.deck,
       trophyAwarded: trophyEvent ?? undefined,
       trophies: trophiesObj,
+      wonCardCounts: wonCardCountsExp,
     });
+
+    // 트로피/덱 소진 게임 종료는 클라이언트가 결과를 볼 수 있도록 3초 후 처리
+    if (trophyEvent) {
+      setTimeout(() => {
+        const trophiesNow = room.state.trophies ? Object.fromEntries(room.state.trophies) : {};
+        if (this.checkTrophyGameOver(roomName, trophiesNow)) return;
+        this.checkDeckEmpty(roomName);
+      }, 3000);
+    } else {
+      setTimeout(() => {
+        this.checkDeckEmpty(roomName);
+      }, 3000);
+    }
   }
 
   // ── pass ──────────────────────────────────────────────────
@@ -529,12 +550,7 @@ export class SpiceHandler {
 
     // 결과 처리
     if (challengeSuccess) {
-      // 도전 성공: 도전자가 더미 전체 획득 + 카드를 낸 사람은 덱에서 2장 드로우
-      const challengerHand = room.state.hands.get(client) ?? [];
-      challengerHand.push(...tableStackCards);
-      room.state.hands.set(client, challengerHand);
-      this.ctx.sendToClient(client, 'myHandUpdate', { roomName, myHand: challengerHand });
-
+      // 도전 성공: 더미는 획득카드(wonCards)에만 기록 + 카드를 낸 사람은 덱에서 2장 드로우(패널티)
       if (targetClient) {
         const targetHand = room.state.hands.get(targetClient) ?? [];
         for (let i = 0; i < 2; i++) {
@@ -544,20 +560,13 @@ export class SpiceHandler {
         this.ctx.sendToClient(targetClient, 'myHandUpdate', { roomName, myHand: targetHand });
       }
     } else {
-      // 도전 실패: 도전자가 덱에서 2장 드로우 + 카드를 낸 사람이 더미 전체 획득
+      // 도전 실패: 도전자가 덱에서 2장 드로우(패널티) + 더미는 획득카드(wonCards)에만 기록
       const challengerHand = room.state.hands.get(client) ?? [];
       for (let i = 0; i < 2; i++) {
         if (room.state.deck.length > 0) challengerHand.push(room.state.deck.pop()!);
       }
       room.state.hands.set(client, challengerHand);
       this.ctx.sendToClient(client, 'myHandUpdate', { roomName, myHand: challengerHand });
-
-      if (targetClient) {
-        const targetHand = room.state.hands.get(targetClient) ?? [];
-        targetHand.push(...tableStackCards);
-        room.state.hands.set(targetClient, targetHand);
-        this.ctx.sendToClient(targetClient, 'myHandUpdate', { roomName, myHand: targetHand });
-      }
     }
 
     // wonCards 기록: 더미를 가져간 플레이어에게 획득 카드 누적
@@ -587,24 +596,19 @@ export class SpiceHandler {
       // 트로피는 "카드를 냈을 때 손패가 비었고, 도전도 이겨낸" 경우에 지급
       if (!room.state.trophies) room.state.trophies = new Map();
       const current = room.state.trophies.get(handEmptyPlayerId) ?? 0;
-      const newCount = Math.min(current + 1, 3);
+      const newCount = Math.min(current + 1, 2);
       room.state.trophies.set(handEmptyPlayerId, newCount);
       const trophyNickname = this.ctx.getNicknameByPlayerId(room, handEmptyPlayerId);
       trophyEvent = { playerId: handEmptyPlayerId, nickname: trophyNickname, trophyCount: newCount };
 
-      // 새 손패 6장 지급 (더미를 이미 가져갔으므로 손패가 다시 채워지지만, 추가로 6장 지급)
-      // 단, targetPlayerId가 handEmptyPlayerId인 경우에만 (도전 실패 → targetPlayerId가 더미 획득)
-      // 더미를 이미 가져갔으므로 추가 6장은 지급하지 않음 (더미로 충분)
-      // 실제로 도전 실패 시 더미를 targetClient(카드 낸 사람)가 가져가므로 손패는 이미 채워짐
-      // 단, 더미가 1장이었다면 손패=1장이므로 6장까지 보충 필요
+      // 트로피 획득 → 새 손패 6장 지급
       if (targetClient) {
-        const targetHandNow = room.state.hands.get(targetClient) ?? [];
-        const needed = Math.max(0, 6 - targetHandNow.length);
-        for (let i = 0; i < needed; i++) {
-          if (room.state.deck.length > 0) targetHandNow.push(room.state.deck.pop()!);
+        const newHand: import('../../game.types').Card[] = [];
+        for (let i = 0; i < 6; i++) {
+          if (room.state.deck.length > 0) newHand.push(room.state.deck.pop()!);
         }
-        room.state.hands.set(targetClient, targetHandNow);
-        this.ctx.sendToClient(targetClient, 'myHandUpdate', { roomName, myHand: targetHandNow });
+        room.state.hands.set(targetClient, newHand);
+        this.ctx.sendToClient(targetClient, 'myHandUpdate', { roomName, myHand: newHand });
       }
 
       console.log(
@@ -618,10 +622,12 @@ export class SpiceHandler {
 
     const trophiesObj = room.state.trophies ? Object.fromEntries(room.state.trophies) : {};
 
-    // 트로피 지급 후 게임 종료 조건 체크
-    if (trophyEvent && this.checkTrophyGameOver(roomName, trophiesObj)) return;
-    // 덱 소진 체크 (도전 결과로 드로우 발생 후)
-    if (this.checkDeckEmpty(roomName)) return;
+    // 플레이어별 획득 카드 수 집계
+    const wonCardsMap = room.state.wonCards ?? new Map();
+    const wonCardCounts: Record<string, number> = {};
+    for (const [pid, cards] of wonCardsMap.entries()) {
+      wonCardCounts[pid] = cards.length;
+    }
 
     this.ctx.broadcastToRoom(roomName, 'challengeResult', {
       roomName,
@@ -644,7 +650,21 @@ export class SpiceHandler {
       deck: room.state.deck,
       trophyAwarded: trophyEvent ?? undefined,
       trophies: trophiesObj,
+      wonCardCounts,
     });
+
+    // 트로피/덱 소진 게임 종료는 클라이언트가 도전 결과를 볼 수 있도록 3초 후 처리
+    if (trophyEvent) {
+      setTimeout(() => {
+        const trophiesNow = room.state.trophies ? Object.fromEntries(room.state.trophies) : {};
+        if (this.checkTrophyGameOver(roomName, trophiesNow)) return;
+        this.checkDeckEmpty(roomName);
+      }, 3000);
+    } else {
+      setTimeout(() => {
+        this.checkDeckEmpty(roomName);
+      }, 3000);
+    }
   }
 
   // ── selectChip ────────────────────────────────────────────
@@ -865,8 +885,7 @@ export class SpiceHandler {
 
   /**
    * 트로피 조건으로 게임이 끝났는지 체크한다.
-   * - 한 플레이어가 트로피 2개 이상 보유
-   * - 트로피 3개가 모두 분배됨 (합계 = 3)
+   * - 한 플레이어가 트로피 2개 이상 보유 시 즉시 종료
    * @returns true이면 종료 처리를 했으므로 caller는 이후 로직 중단
    */
   private checkTrophyGameOver(
@@ -874,10 +893,9 @@ export class SpiceHandler {
     trophiesObj: Record<string, number>,
   ): boolean {
     const entries = Object.entries(trophiesObj);
-    const total = entries.reduce((s, [, n]) => s + n, 0);
     const maxOwned = entries.reduce((m, [, n]) => Math.max(m, n), 0);
 
-    const isOver = maxOwned >= 2 || total >= 3;
+    const isOver = maxOwned >= 2;
     if (isOver) {
       this.finishSpiceGame(roomName, trophiesObj, 'trophy');
     }
