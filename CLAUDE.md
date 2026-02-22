@@ -2,6 +2,16 @@
 
 NestJS 기반 실시간 멀티플레이어 카드 게임 서버
 
+## 변경 이력
+
+| 날짜 | 내용 |
+|------|------|
+| 2026-02-22 | `DISCONNECT_GRACE_MS` 5초 → 30초 연장 |
+| 2026-02-22 | `handleJoinRoom` 전면 재구성: Case 2에서 같은 소켓 중복 `joinRoom` 안전 처리, `buildFirstDrawState()` / `buildSpiceState()` 헬퍼 추출 |
+| 2026-02-22 | `roomJoined`에 firstDraw 전체 상태, `turnTimeLeft`, `challengeTimeLeft` 포함 |
+| 2026-02-22 | `GameState`에 `turnStartedAt`, `challengePhase.startedAt` 추가 (타이머 동기화용) |
+| 2026-02-22 | `spice.handler.ts`: 턴 전환 4곳에 `turnStartedAt = Date.now()` 설정, `challengePhase`에 `startedAt` 추가 |
+
 ## 기술 스택
 
 - **Framework**: NestJS v11
