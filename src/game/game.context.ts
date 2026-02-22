@@ -8,7 +8,7 @@ import { Room, PlayerHand } from './game.types';
  */
 @Injectable()
 export class GameContext {
-  static readonly DISCONNECT_GRACE_MS = 5000;
+  static readonly DISCONNECT_GRACE_MS = 30000;
   static readonly CARD_IMAGE_BASE_URL =
     process.env.CARD_IMAGE_BASE_URL ||
     'https://storage.googleapis.com/teak-banner-431004-n3.appspot.com/images/cards';

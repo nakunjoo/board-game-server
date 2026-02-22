@@ -175,15 +175,73 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
+    // ── 선뽑기 상태 계산 헬퍼 ──────────────────────────────────
+    const buildFirstDrawState = () => {
+      const isFirstDraw = room.state.firstDraw !== undefined && !room.gameStarted;
+      const myDrawnNumber = room.state.firstDraw?.get(playerId) ?? null;
+      const drawnCount = room.state.firstDrawDone?.size ?? 0;
+      const firstDrawFinished = isFirstDraw && drawnCount === room.clients.size;
+      let firstDrawResults: Record<string, number> = {};
+      let firstPlayerId: string | null = null;
+      let firstNickname: string | null = null;
+      if (firstDrawFinished && room.state.firstDraw) {
+        room.state.firstDraw.forEach((num, pid) => {
+          firstDrawResults[pid] = num;
+        });
+        let maxNum = -1;
+        room.state.firstDraw.forEach((num, pid) => {
+          if (num > maxNum) { maxNum = num; firstPlayerId = pid; }
+        });
+        firstNickname = firstPlayerId
+          ? this.ctx.getNicknameByPlayerId(room, firstPlayerId)
+          : null;
+      }
+      return { isFirstDraw, myDrawnNumber, drawnCount, firstDrawFinished, firstDrawResults, firstPlayerId, firstNickname };
+    };
+
+    // ── Spice 재연결 공통 필드 ─────────────────────────────────
+    const buildSpiceState = () => {
+      const wonCardsMap = room.state.wonCards ?? new Map<string, unknown[]>();
+      const wonCardCounts: Record<string, number> = {};
+      for (const [pid, cards] of wonCardsMap.entries()) wonCardCounts[pid] = (cards as unknown[]).length;
+      const challengePhase = room.state.challengePhase
+        ? {
+            playerId: room.state.challengePhase.playerId,
+            nickname:
+              room.nicknames.get(
+                this.ctx.findClientByPlayerId(room, room.state.challengePhase.playerId) as WebSocket,
+              ) ?? '',
+            declaredSuit: room.state.challengePhase.declaredSuit,
+            declaredNumber: room.state.challengePhase.declaredNumber,
+          }
+        : null;
+      const now = Date.now();
+      const TURN_TIME_MS = 30000;
+      const CHALLENGE_TIME_MS = 5000;
+      const turnTimeLeft =
+        room.state.turnStartedAt != null && !room.state.challengePhase
+          ? Math.max(0, Math.round((TURN_TIME_MS - (now - room.state.turnStartedAt)) / 1000))
+          : null;
+      const challengeTimeLeft =
+        room.state.challengePhase?.startedAt != null
+          ? Math.max(0, Math.round((CHALLENGE_TIME_MS - (now - room.state.challengePhase.startedAt)) / 1000))
+          : null;
+      return {
+        currentTurnPlayerId: room.state.currentTurnPlayerId ?? null,
+        currentSuit: room.state.currentSuit ?? null,
+        currentNumber: room.state.currentNumber ?? 0,
+        tableStackSize: room.state.tableStack?.length ?? 0,
+        trophies: room.state.trophies ? Object.fromEntries(room.state.trophies) : {},
+        wonCardCounts,
+        challengePhase,
+        turnTimeLeft,
+        challengeTimeLeft,
+      };
+    };
+
     const disconnectTimer = room.disconnectTimers.get(playerId);
 
-    if (room.gameStarted && !disconnectTimer) {
-      this.ctx.sendToClient(client, 'error', {
-        message: '이미 게임이 시작된 방입니다',
-      });
-      return;
-    }
-
+    // ── Case 1: 재연결 유예 기간 내 재접속 ──────────────────────
     if (disconnectTimer) {
       clearTimeout(disconnectTimer);
       room.disconnectTimers.delete(playerId);
@@ -196,58 +254,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       const players = this.ctx.getPlayersWithOrder(room);
       const order = players.find((p) => p.playerId === playerId)?.order ?? 0;
+      const spice = buildSpiceState();
+      const firstDraw = buildFirstDrawState();
 
-      this.ctx.sendToClient(client, 'roomJoined', {
-        name,
-        gameType: room.gameType,
-        memberCount: room.clients.size,
-        players,
-        deck: room.state.deck,
-        playerHands: this.ctx.getPlayerHands(room),
-        myHand: room.state.hands.get(client) ?? [],
-        gameStarted: room.gameStarted,
-        openCards: room.state.openCards,
-        hostPlayerId: room.hostPlayerId,
-        hostNickname: room.hostNickname,
-        chips: room.state.chips,
-        currentStep: room.state.currentStep,
-        readyPlayers: Array.from(room.state.playerReady),
-        previousChips: Object.fromEntries(room.state.previousChips),
-        winLossRecord: Object.fromEntries(room.state.winLossRecord),
-        // Spice 게임 재연결 상태
-        currentTurnPlayerId: room.state.currentTurnPlayerId ?? null,
-        currentSuit: room.state.currentSuit ?? null,
-        currentNumber: room.state.currentNumber ?? 0,
-        tableStackSize: room.state.tableStack?.length ?? 0,
-        trophies: room.state.trophies ? Object.fromEntries(room.state.trophies) : {},
-        challengePhase: room.state.challengePhase
-          ? {
-              playerId: room.state.challengePhase.playerId,
-              nickname: room.nicknames.get(
-                this.ctx.findClientByPlayerId(room, room.state.challengePhase.playerId) as WebSocket
-              ) ?? '',
-              declaredSuit: room.state.challengePhase.declaredSuit,
-              declaredNumber: room.state.challengePhase.declaredNumber,
-            }
-          : null,
-      });
-
-      this.ctx.broadcastToRoom(
-        name,
-        'userJoined',
-        { roomName: name, memberCount: room.clients.size, playerId, nickname, order, players },
-        client,
-      );
-      return;
-    }
-
-    // 이미 같은 playerId로 입장한 경우 (재입장) - 기존 클라이언트 교체
-    const existingClient = this.ctx.findClientByPlayerId(room, playerId);
-    if (existingClient && existingClient !== client) {
-      this.ctx.replaceClient(room, existingClient, client);
-      this.ctx.clientRooms.get(client)?.add(name);
-
-      const players = this.ctx.getPlayersWithOrder(room);
       this.ctx.sendToClient(client, 'roomJoined', {
         name,
         gameType: room.gameType,
@@ -269,27 +278,75 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         readyPlayers: Array.from(room.state.playerReady),
         previousChips: Object.fromEntries(room.state.previousChips),
         winLossRecord: Object.fromEntries(room.state.winLossRecord),
-        // Spice 게임 재연결 상태
-        currentTurnPlayerId: room.state.currentTurnPlayerId ?? null,
-        currentSuit: room.state.currentSuit ?? null,
-        currentNumber: room.state.currentNumber ?? 0,
-        tableStackSize: room.state.tableStack?.length ?? 0,
-        trophies: room.state.trophies ? Object.fromEntries(room.state.trophies) : {},
-        challengePhase: room.state.challengePhase
-          ? {
-              playerId: room.state.challengePhase.playerId,
-              nickname: room.nicknames.get(
-                this.ctx.findClientByPlayerId(room, room.state.challengePhase.playerId) as WebSocket
-              ) ?? '',
-              declaredSuit: room.state.challengePhase.declaredSuit,
-              declaredNumber: room.state.challengePhase.declaredNumber,
-            }
-          : null,
+        ...spice,
+        ...firstDraw,
+      });
+
+      this.ctx.broadcastToRoom(
+        name,
+        'userJoined',
+        { roomName: name, memberCount: room.clients.size, playerId, nickname, order, players },
+        client,
+      );
+      return;
+    }
+
+    // ── Case 2: 같은 playerId가 이미 방에 있는 경우 ──────────────
+    // gameStarted 체크보다 먼저 처리해야 게임 중 새로고침이 정상 동작함.
+    // existingClient === client 이면 같은 소켓에서 joinRoom을 재전송한 것 (중복 전송) →
+    //   room 상태를 변경하지 않고 roomJoined만 재전송한다.
+    const existingClient = this.ctx.findClientByPlayerId(room, playerId);
+    if (existingClient) {
+      if (existingClient !== client) {
+        // 다른 소켓 → 교체 (빠른 새로고침: 구 소켓이 아직 살아있는 경우)
+        this.ctx.replaceClient(room, existingClient, client);
+        console.log(`'${nickname}' (${playerId}) replaced existing client in room '${name}'`);
+      } else {
+        // 같은 소켓 → room 상태 변경 없이 재전송만
+        console.log(`'${nickname}' (${playerId}) re-sent joinRoom on same socket in '${name}'`);
+      }
+      this.ctx.clientRooms.get(client)?.add(name);
+
+      const players = this.ctx.getPlayersWithOrder(room);
+      const spice = buildSpiceState();
+      const firstDraw = buildFirstDrawState();
+
+      this.ctx.sendToClient(client, 'roomJoined', {
+        name,
+        gameType: room.gameType,
+        memberCount: room.clients.size,
+        players,
+        deck: room.state.deck,
+        playerHands: this.ctx.getPlayerHands(room),
+        myHand: room.state.hands.get(client) ?? [],
+        gameStarted: room.gameStarted,
+        gameFinished: room.gameFinished,
+        lastGameResults: room.lastGameResults,
+        gameOver: room.gameOver,
+        gameOverResult: room.gameOverResult,
+        openCards: room.state.openCards,
+        hostPlayerId: room.hostPlayerId,
+        hostNickname: room.hostNickname,
+        chips: room.state.chips,
+        currentStep: room.state.currentStep,
+        readyPlayers: Array.from(room.state.playerReady),
+        previousChips: Object.fromEntries(room.state.previousChips),
+        winLossRecord: Object.fromEntries(room.state.winLossRecord),
+        ...spice,
+        ...firstDraw,
       });
       return;
     }
 
-    // 신규 입장
+    // ── 게임 중인 방에 신규 플레이어 진입 차단 ────────────────────
+    if (room.gameStarted) {
+      this.ctx.sendToClient(client, 'error', {
+        message: '이미 게임이 시작된 방입니다',
+      });
+      return;
+    }
+
+    // ── Case 3: 신규 입장 ─────────────────────────────────────
     room.clients.add(client);
     room.playerIds.set(client, playerId);
     room.nicknames.set(client, nickname);
@@ -303,6 +360,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     console.log(
       `'${nickname}' (${playerId}) joined room '${name}' with order ${order}. Room size: ${room.clients.size}`,
     );
+
+    const spice = buildSpiceState();
+    const firstDraw = buildFirstDrawState();
 
     this.ctx.sendToClient(client, 'roomJoined', {
       name,
@@ -325,6 +385,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       readyPlayers: Array.from(room.state.playerReady),
       previousChips: Object.fromEntries(room.state.previousChips),
       winLossRecord: Object.fromEntries(room.state.winLossRecord),
+      ...spice,
+      ...firstDraw,
     });
 
     this.ctx.broadcastToRoom(
@@ -382,30 +444,43 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     if (room.playerIds.get(client) !== room.hostPlayerId) {
-      this.ctx.sendToClient(client, 'error', { message: '방장만 강퇴할 수 있습니다' });
+      this.ctx.sendToClient(client, 'error', {
+        message: '방장만 강퇴할 수 있습니다',
+      });
       return;
     }
 
     if (room.gameStarted) {
-      this.ctx.sendToClient(client, 'error', { message: '게임 시작 후에는 강퇴할 수 없습니다' });
+      this.ctx.sendToClient(client, 'error', {
+        message: '게임 시작 후에는 강퇴할 수 없습니다',
+      });
       return;
     }
 
     if (targetPlayerId === room.hostPlayerId) {
-      this.ctx.sendToClient(client, 'error', { message: '자기 자신은 강퇴할 수 없습니다' });
+      this.ctx.sendToClient(client, 'error', {
+        message: '자기 자신은 강퇴할 수 없습니다',
+      });
       return;
     }
 
     const targetClient = this.ctx.findClientByPlayerId(room, targetPlayerId);
     if (!targetClient) {
-      this.ctx.sendToClient(client, 'error', { message: '해당 플레이어를 찾을 수 없습니다' });
+      this.ctx.sendToClient(client, 'error', {
+        message: '해당 플레이어를 찾을 수 없습니다',
+      });
       return;
     }
 
     const targetNickname = room.nicknames.get(targetClient) ?? targetPlayerId;
-    this.ctx.sendToClient(targetClient, 'kicked', { roomName, message: '방장에 의해 강퇴되었습니다' });
+    this.ctx.sendToClient(targetClient, 'kicked', {
+      roomName,
+      message: '방장에 의해 강퇴되었습니다',
+    });
     this.ctx.leaveRoom(targetClient, roomName);
-    console.log(`'${targetNickname}' (${targetPlayerId}) kicked from room '${roomName}' by host`);
+    console.log(
+      `'${targetNickname}' (${targetPlayerId}) kicked from room '${roomName}' by host`,
+    );
   }
 
   @SubscribeMessage('getRooms')
@@ -430,11 +505,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const room = this.ctx.rooms.get(roomName);
 
     if (!room) {
-      this.ctx.sendToClient(client, 'error', { message: `'${roomName}' 방이 존재하지 않습니다` });
+      this.ctx.sendToClient(client, 'error', {
+        message: `'${roomName}' 방이 존재하지 않습니다`,
+      });
       return;
     }
     if (!room.clients.has(client)) {
-      this.ctx.sendToClient(client, 'error', { message: `'${roomName}' 방에 참여하고 있지 않습니다` });
+      this.ctx.sendToClient(client, 'error', {
+        message: `'${roomName}' 방에 참여하고 있지 않습니다`,
+      });
       return;
     }
 
@@ -453,7 +532,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const room = this.ctx.rooms.get(roomName);
 
     if (!room || !room.clients.has(client)) {
-      this.ctx.sendToClient(client, 'error', { message: `'${roomName}' 방에 참여하고 있지 않습니다` });
+      this.ctx.sendToClient(client, 'error', {
+        message: `'${roomName}' 방에 참여하고 있지 않습니다`,
+      });
       return;
     }
     this.ctx.broadcastToRoom(roomName, 'roomMessage', { roomName, message });
@@ -504,7 +585,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('playCard')
   handlePlayCard(
-    @MessageBody() data: { roomName: string; cardIndex: number; declaredSuit: string; declaredNumber: number },
+    @MessageBody()
+    data: {
+      roomName: string;
+      cardIndex: number;
+      declaredSuit: string;
+      declaredNumber: number;
+    },
     @ConnectedSocket() client: WebSocket,
   ): void {
     this.spiceHandler.handlePlayCard(data, client);

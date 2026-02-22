@@ -40,6 +40,7 @@ export interface GameState {
   firstDrawPool?: number[]; // 남은 숫자 풀 (1~10 셔플)
   // 턴 관리 (Spice 게임)
   currentTurnPlayerId?: string; // 현재 턴인 playerId
+  turnStartedAt?: number | null; // 현재 턴 시작 시각 (ms, 재연결 시 남은 시간 계산용)
   currentSuit?: string | null; // 현재 선언된 향신료 (null = 첫 턴 or 리셋 후)
   currentNumber?: number; // 현재 선언된 숫자 (0 = 첫 턴)
   tableStack?: Card[]; // 현재 쌓인 카드 더미 (실제 카드)
@@ -51,6 +52,7 @@ export interface GameState {
     declaredNumber: number;   // 선언한 숫자
     nextPlayerId: string;     // 도전 없을 시 다음 턴 플레이어
     timer: ReturnType<typeof setTimeout>; // 5초 자동 진행 타이머
+    startedAt: number;        // 도전 페이즈 시작 시각 (ms, 재연결 시 남은 시간 계산용)
     handEmptyPlayerId?: string; // 이 카드를 내면 손패가 비는 플레이어 (트로피 대상)
   } | null;
   // 트로피 (Spice 게임) - 손패를 모두 비운 플레이어에게 지급

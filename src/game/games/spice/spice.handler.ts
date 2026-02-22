@@ -159,6 +159,7 @@ export class SpiceHandler {
     room.state.firstDrawDone = undefined;
     room.state.firstDrawPool = undefined;
     room.state.currentTurnPlayerId = firstPlayerId;
+    room.state.turnStartedAt = Date.now();
     room.state.currentSuit = null;
     room.state.currentNumber = 0;
     room.state.tableStack = [];
@@ -298,6 +299,7 @@ export class SpiceHandler {
     }, 5000);
 
     // 도전 페이즈 상태 저장
+    room.state.turnStartedAt = null; // 도전 페이즈 중 턴 타이머 일시 중단
     room.state.challengePhase = {
       playerId,
       playedCard,
@@ -305,6 +307,7 @@ export class SpiceHandler {
       declaredNumber,
       nextPlayerId,
       timer: challengeTimer,
+      startedAt: Date.now(),
       handEmptyPlayerId,
     };
 
@@ -350,15 +353,19 @@ export class SpiceHandler {
       const nickname = this.ctx.getNicknameByPlayerId(room, handEmptyPlayerId);
       trophyEvent = { playerId: handEmptyPlayerId, nickname, trophyCount: newCount };
 
-      // 새 손패 6장 지급 (계속 게임 진행)
-      const emptyClient = this.ctx.findClientByPlayerId(room, handEmptyPlayerId);
-      if (emptyClient) {
-        const newHand: import('../../game.types').Card[] = [];
-        for (let i = 0; i < 6; i++) {
-          if (room.state.deck.length > 0) newHand.push(room.state.deck.pop()!);
+      // 게임이 계속되는 경우에만 손패 6장 지급 (게임 종료 시 채우면 결과창에서 -점 불이익)
+      const totalTrophiesExp = Object.values(Object.fromEntries(room.state.trophies)).reduce((s, n) => s + n, 0);
+      const gameWillEndExp = newCount >= 2 || totalTrophiesExp >= 3;
+      if (!gameWillEndExp) {
+        const emptyClient = this.ctx.findClientByPlayerId(room, handEmptyPlayerId);
+        if (emptyClient) {
+          const newHand: import('../../game.types').Card[] = [];
+          for (let i = 0; i < 6; i++) {
+            if (room.state.deck.length > 0) newHand.push(room.state.deck.pop()!);
+          }
+          room.state.hands.set(emptyClient, newHand);
+          this.ctx.sendToClient(emptyClient, 'myHandUpdate', { roomName, myHand: newHand });
         }
-        room.state.hands.set(emptyClient, newHand);
-        this.ctx.sendToClient(emptyClient, 'myHandUpdate', { roomName, myHand: newHand });
       }
 
       console.log(
@@ -370,6 +377,7 @@ export class SpiceHandler {
     room.state.currentSuit = declaredSuit;
     room.state.currentNumber = declaredNumber;
     room.state.currentTurnPlayerId = nextPlayerId;
+    room.state.turnStartedAt = Date.now();
     room.state.challengePhase = null;
 
     const trophiesObj = room.state.trophies ? Object.fromEntries(room.state.trophies) : {};
@@ -397,13 +405,13 @@ export class SpiceHandler {
       wonCardCounts: wonCardCountsExp,
     });
 
-    // 트로피/덱 소진 게임 종료는 클라이언트가 결과를 볼 수 있도록 3초 후 처리
+    // 트로피 종료: 1초 후 / 덱 소진 종료: 3초 후
     if (trophyEvent) {
       setTimeout(() => {
         const trophiesNow = room.state.trophies ? Object.fromEntries(room.state.trophies) : {};
         if (this.checkTrophyGameOver(roomName, trophiesNow)) return;
         this.checkDeckEmpty(roomName);
-      }, 3000);
+      }, 1000);
     } else {
       setTimeout(() => {
         this.checkDeckEmpty(roomName);
@@ -447,6 +455,7 @@ export class SpiceHandler {
     const nextClient = room.state.playerOrder[nextIndex];
     const nextPlayerId = room.playerIds.get(nextClient) ?? '';
     room.state.currentTurnPlayerId = nextPlayerId;
+    room.state.turnStartedAt = Date.now();
 
     console.log(
       `[Spice] '${nickname}' passed. Drew 1 card. Next: ${nextPlayerId}`,
@@ -587,6 +596,7 @@ export class SpiceHandler {
     const winnerId = challengeSuccess ? challengerId : targetPlayerId;
     const loserId = challengeSuccess ? targetPlayerId : challengerId;
     room.state.currentTurnPlayerId = loserId;
+    room.state.turnStartedAt = Date.now();
 
     // 트로피 지급: 도전 실패(카드 낸 사람이 진실) + 손패가 비었던 경우
     // 도전이 왔지만 상대가 진실이었음 → 카드 낸 사람의 손패가 이미 비어있으면 트로피 지급
@@ -601,8 +611,10 @@ export class SpiceHandler {
       const trophyNickname = this.ctx.getNicknameByPlayerId(room, handEmptyPlayerId);
       trophyEvent = { playerId: handEmptyPlayerId, nickname: trophyNickname, trophyCount: newCount };
 
-      // 트로피 획득 → 새 손패 6장 지급
-      if (targetClient) {
+      // 게임이 계속되는 경우에만 손패 6장 지급 (게임 종료 시 채우면 결과창에서 -점 불이익)
+      const totalTrophiesChal = Object.values(Object.fromEntries(room.state.trophies)).reduce((s, n) => s + n, 0);
+      const gameWillEndChal = newCount >= 2 || totalTrophiesChal >= 3;
+      if (!gameWillEndChal && targetClient) {
         const newHand: import('../../game.types').Card[] = [];
         for (let i = 0; i < 6; i++) {
           if (room.state.deck.length > 0) newHand.push(room.state.deck.pop()!);
@@ -653,13 +665,13 @@ export class SpiceHandler {
       wonCardCounts,
     });
 
-    // 트로피/덱 소진 게임 종료는 클라이언트가 도전 결과를 볼 수 있도록 3초 후 처리
+    // 트로피 종료: 1초 후 / 덱 소진 종료: 3초 후
     if (trophyEvent) {
       setTimeout(() => {
         const trophiesNow = room.state.trophies ? Object.fromEntries(room.state.trophies) : {};
         if (this.checkTrophyGameOver(roomName, trophiesNow)) return;
         this.checkDeckEmpty(roomName);
-      }, 3000);
+      }, 1000);
     } else {
       setTimeout(() => {
         this.checkDeckEmpty(roomName);
@@ -885,7 +897,8 @@ export class SpiceHandler {
 
   /**
    * 트로피 조건으로 게임이 끝났는지 체크한다.
-   * - 한 플레이어가 트로피 2개 이상 보유 시 즉시 종료
+   * - 한 플레이어가 트로피 2개 이상 보유
+   * - 트로피 3개가 모두 분배됨 (합계 = 3)
    * @returns true이면 종료 처리를 했으므로 caller는 이후 로직 중단
    */
   private checkTrophyGameOver(
@@ -893,9 +906,10 @@ export class SpiceHandler {
     trophiesObj: Record<string, number>,
   ): boolean {
     const entries = Object.entries(trophiesObj);
+    const total = entries.reduce((s, [, n]) => s + n, 0);
     const maxOwned = entries.reduce((m, [, n]) => Math.max(m, n), 0);
 
-    const isOver = maxOwned >= 2;
+    const isOver = maxOwned >= 2 || total >= 3;
     if (isOver) {
       this.finishSpiceGame(roomName, trophiesObj, 'trophy');
     }
