@@ -12,6 +12,7 @@ import { GameEngineFactory } from './game-engine.factory';
 import { GameContext } from './game.context';
 import { GangHandler } from './games/gang/gang.handler';
 import { SpiceHandler } from './games/spice/spice.handler';
+import { SkulkingHandler } from './games/skulking/skulking.handler';
 
 @WebSocketGateway({ path: '/ws' })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -23,6 +24,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly ctx: GameContext,
     private readonly gangHandler: GangHandler,
     private readonly spiceHandler: SpiceHandler,
+    private readonly skulkingHandler: SkulkingHandler,
   ) {}
 
   // ── 연결 관리 ─────────────────────────────────────────────
@@ -199,6 +201,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return { isFirstDraw, myDrawnNumber, drawnCount, firstDrawFinished, firstDrawResults, firstPlayerId, firstNickname };
     };
 
+    // ── Skulking 재연결 공통 필드 ─────────────────────────────
+    const buildSkulkingState = () => {
+      if (room.gameType !== 'skulking') return {};
+      return this.skulkingHandler.buildSkulkingState(room);
+    };
+
     // ── Spice 재연결 공통 필드 ─────────────────────────────────
     const buildSpiceState = () => {
       const wonCardsMap = room.state.wonCards ?? new Map<string, unknown[]>();
@@ -256,6 +264,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const order = players.find((p) => p.playerId === playerId)?.order ?? 0;
       const spice = buildSpiceState();
       const firstDraw = buildFirstDrawState();
+      const skulking = buildSkulkingState();
 
       this.ctx.sendToClient(client, 'roomJoined', {
         name,
@@ -280,6 +289,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         winLossRecord: Object.fromEntries(room.state.winLossRecord),
         ...spice,
         ...firstDraw,
+        ...skulking,
       });
 
       this.ctx.broadcastToRoom(
@@ -310,6 +320,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const players = this.ctx.getPlayersWithOrder(room);
       const spice = buildSpiceState();
       const firstDraw = buildFirstDrawState();
+      const skulking = buildSkulkingState();
 
       this.ctx.sendToClient(client, 'roomJoined', {
         name,
@@ -334,6 +345,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         winLossRecord: Object.fromEntries(room.state.winLossRecord),
         ...spice,
         ...firstDraw,
+        ...skulking,
       });
       return;
     }
@@ -363,6 +375,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const spice = buildSpiceState();
     const firstDraw = buildFirstDrawState();
+    const skulking = buildSkulkingState();
 
     this.ctx.sendToClient(client, 'roomJoined', {
       name,
@@ -387,6 +400,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       winLossRecord: Object.fromEntries(room.state.winLossRecord),
       ...spice,
       ...firstDraw,
+      ...skulking,
     });
 
     this.ctx.broadcastToRoom(
@@ -560,8 +574,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { roomName: string },
     @ConnectedSocket() client: WebSocket,
   ): void {
-    if (this.getGameType(data.roomName) === 'spice') {
+    const gameType = this.getGameType(data.roomName);
+    if (gameType === 'spice') {
       this.spiceHandler.handleStartGame(data, client);
+    } else if (gameType === 'skulking') {
+      this.skulkingHandler.handleStartGame(data, client);
     } else {
       this.gangHandler.handleStartGame(data, client);
     }
@@ -663,5 +680,36 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: WebSocket,
   ): void {
     this.gangHandler.handleTestFail(data, client);
+  }
+
+  // ── 스컬킹 전용 이벤트 ─────────────────────────────────────
+
+  @SubscribeMessage('skulkingBid')
+  handleSkulkingBid(
+    @MessageBody() data: { roomName: string; bid: number },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.skulkingHandler.handleBid(data, client);
+  }
+
+  @SubscribeMessage('skulkingPlayCard')
+  handleSkulkingPlayCard(
+    @MessageBody()
+    data: {
+      roomName: string;
+      cardIndex: number;
+      tigressDeclared?: 'escape' | 'pirate';
+    },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.skulkingHandler.handlePlayCard(data, client);
+  }
+
+  @SubscribeMessage('skulkingNextRound')
+  handleSkulkingNextRound(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.skulkingHandler.handleNextRound(data, client);
   }
 }

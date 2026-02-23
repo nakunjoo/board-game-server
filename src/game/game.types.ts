@@ -2,7 +2,9 @@ import { WebSocket } from 'ws';
 
 export type CardType = 'clubs' | 'diamonds' | 'hearts' | 'spades'
   | 'pepper' | 'cinnamon' | 'saffron'   // 향신료 3종
-  | 'wild-number' | 'wild-suit';          // 향신료 와일드카드
+  | 'wild-number' | 'wild-suit'          // 향신료 와일드카드
+  | 'sk-black' | 'sk-yellow' | 'sk-purple' | 'sk-green'  // 스컬킹 숫자 수트
+  | 'sk-escape' | 'sk-pirate' | 'sk-mermaid' | 'sk-skulking' | 'sk-tigress'; // 스컬킹 특수 카드
 
 export interface Card {
   type: CardType;
@@ -59,6 +61,22 @@ export interface GameState {
   trophies?: Map<string, number>; // playerId → 트로피 수 (최대 3)
   // 따낸 카드 (Spice 게임) - 도전/도전만료로 더미를 획득한 카드들
   wonCards?: Map<string, Card[]>; // playerId → 획득한 카드 목록
+  // 스컬킹 게임 전용
+  skulkingRound?: number; // 현재 라운드 (1~10)
+  skulkingPhase?: 'bid' | 'play'; // 현재 페이즈
+  skulkingBidOrder?: string[]; // 비드 순서 (playerId 배열)
+  skulkingCurrentBidIndex?: number; // 현재 비드 차례 인덱스
+  bids?: Map<string, number>; // playerId → 비드 수
+  tricks?: Map<string, number>; // playerId → 획득 트릭 수
+  scores?: Map<string, number>; // playerId → 누적 점수
+  roundScores?: Map<string, number[]>; // playerId → 라운드별 점수 기록
+  skulkingLeadPlayerId?: string; // 현재 트릭 리드 플레이어
+  skulkingCurrentPlayerId?: string; // 현재 카드 낼 차례 플레이어
+  skulkingTrickOrder?: string[]; // 현재 트릭 내는 순서 (playerId 배열)
+  skulkingTrickIndex?: number; // 현재 트릭 내는 순서 인덱스
+  currentTrick?: Array<{ playerId: string; card: Card; tigressDeclared?: 'escape' | 'pirate' }>; // 현재 트릭
+  skulkingTrickCount?: number; // 현재 라운드에서 완료된 트릭 수
+  skulkingNextRoundReady?: Set<string>; // 다음 라운드 준비 완료한 playerId
 }
 
 export interface PlayerResult {

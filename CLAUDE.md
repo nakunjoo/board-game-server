@@ -6,6 +6,10 @@ NestJS 기반 실시간 멀티플레이어 카드 게임 서버
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-02-23 | 스컬킹(Skull King) 게임 추가: `engines/skulking.engine.ts`, `games/skulking/skulking.handler.ts` 신규 생성 |
+| 2026-02-23 | `game.types.ts`: CardType에 `sk-black/yellow/purple/green/escape/pirate/mermaid/skulking/tigress` 추가, GameState에 skulking 전용 필드 추가 |
+| 2026-02-23 | `game.module.ts`: SkulkingEngine, SkulkingHandler 등록 |
+| 2026-02-23 | `game.gateway.ts`: `skulkingBid`, `skulkingPlayCard`, `skulkingNextRound` 이벤트 핸들러 추가, `buildSkulkingState()` 헬퍼 추가, roomJoined에 skulking 상태 포함 |
 | 2026-02-22 | `DISCONNECT_GRACE_MS` 5초 → 30초 연장 |
 | 2026-02-22 | `handleJoinRoom` 전면 재구성: Case 2에서 같은 소켓 중복 `joinRoom` 안전 처리, `buildFirstDrawState()` / `buildSpiceState()` 헬퍼 추출 |
 | 2026-02-22 | `roomJoined`에 firstDraw 전체 상태, `turnTimeLeft`, `challengeTimeLeft` 포함 |
@@ -35,10 +39,12 @@ src/
     ├── game-engine.factory.ts       # 게임 엔진 팩토리
     ├── engines/
     │   ├── standard-card.engine.ts  # 표준 52장 덱 엔진 (Gang)
-    │   └── spice.engine.ts          # Spice 100장 덱 엔진
+    │   ├── spice.engine.ts          # Spice 100장 덱 엔진
+    │   └── skulking.engine.ts       # Skulking 66장 덱 엔진
     └── games/
         ├── gang/gang.handler.ts     # Gang 게임 핸들러
-        └── spice/spice.handler.ts   # Spice 게임 핸들러
+        ├── spice/spice.handler.ts   # Spice 게임 핸들러
+        └── skulking/skulking.handler.ts  # Skulking 게임 핸들러
 ```
 
 ## 타입 정의 (game.types.ts)
@@ -46,9 +52,11 @@ src/
 ### Card
 ```typescript
 {
-  type: 'clubs' | 'diamonds' | 'hearts' | 'spades'
-       | 'pepper' | 'cinnamon' | 'saffron'
-       | 'wild-number' | 'wild-suit'
+  type: 'clubs' | 'diamonds' | 'hearts' | 'spades'        // Gang
+       | 'pepper' | 'cinnamon' | 'saffron'                 // Spice 수트
+       | 'wild-number' | 'wild-suit'                       // Spice 와일드
+       | 'sk-black' | 'sk-yellow' | 'sk-purple' | 'sk-green'  // Skulking 수트
+       | 'sk-escape' | 'sk-pirate' | 'sk-mermaid' | 'sk-skulking' | 'sk-tigress'  // Skulking 특수
   value: number
   image: string
   name: string
@@ -84,6 +92,22 @@ src/
   } | null
   trophies?: Map<string, number>
   wonCards?: Map<string, Card[]>
+  // Skulking 전용
+  skulkingRound?: number                    // 현재 라운드 (1~10)
+  skulkingPhase?: 'bid' | 'play'            // 현재 페이즈
+  skulkingBidOrder?: string[]               // 비드 순서 (playerId 배열)
+  skulkingCurrentBidIndex?: number          // 현재 비드 중인 인덱스
+  bids?: Map<string, number>                // playerId → 비드 수
+  tricks?: Map<string, number>              // playerId → 획득 트릭 수
+  scores?: Map<string, number>              // playerId → 누적 점수
+  roundScores?: Map<string, number[]>       // playerId → 라운드별 점수 기록
+  skulkingLeadPlayerId?: string             // 현재 트릭 리드 플레이어
+  skulkingCurrentPlayerId?: string          // 현재 카드 낼 차례 플레이어
+  skulkingTrickOrder?: string[]             // 트릭 플레이 순서
+  skulkingTrickIndex?: number               // 현재 트릭 플레이 인덱스
+  currentTrick?: TrickEntry[]               // 현재 트릭 카드들
+  skulkingTrickCount?: number               // 현재 라운드 진행된 트릭 수
+  skulkingNextRoundReady?: Set<string>      // 다음 라운드 준비 완료한 playerId
 }
 ```
 
@@ -119,6 +143,45 @@ src/
 **클라이언트 → 서버:** `startGame`, `drawFirstCard`, `playCard`, `pass`, `challenge`, `readyNextRound`
 
 **서버 → 클라이언트:** `firstDrawStarted`, `firstDrawResult`, `firstDrawProgress`, `firstDrawFinished`, `gameStarted`, `cardPlayed`, `cardPassed`, `myHandUpdate`, `challengePhase`, `challengeExpired`, `challengeResult`, `spiceGameOver`
+
+## Skulking 게임 이벤트
+
+**클라이언트 → 서버:** `startGame`, `skulkingBid`, `skulkingPlayCard`, `skulkingNextRound`
+
+**서버 → 클라이언트:**
+| 이벤트 | 내용 |
+|--------|------|
+| `skulkingRoundStarted` | 라운드 시작 (round, myHand, playerHands, scores) |
+| `skulkingBidPhase` | 비드 단계 시작 (round, currentBidPlayerId, bids) |
+| `skulkingBidUpdate` | 비드 제출 현황 (bids, nextBidPlayerId) |
+| `skulkingPlayPhase` | 플레이 단계 시작 (leadPlayerId, bids) |
+| `skulkingCardPlayed` | 카드 냄 (currentTrick, playerHands) |
+| `skulkingTurnUpdate` | 트릭 완료 후 다음 리드 플레이어 (currentPlayerId) |
+| `skulkingTrickResult` | 트릭 결과 (tricks) |
+| `skulkingRoundResult` | 라운드 결과 (round, bids, tricks, roundScores, totalScores, roundScoreHistory, isLastRound) |
+| `skulkingGameOver` | 최종 결과 (finalScores, ranking, roundScoreHistory) |
+
+## Skulking 트릭 승자 판정 (`skulking.handler.ts`)
+
+```
+☠ Skull King (Mermaid 없을 때) > M Mermaid (Skull King 있을 때) > P Pirate/Tigress(Pirate) > ♠ 검정 수트(높은 숫자) > 리드 수트(높은 숫자) > 나머지
+E Escape는 항상 짐
+```
+
+## Skulking 점수 계산
+
+- **비드 성공**: 비드 × 20점 (비드 0 성공: 라운드 수 × 10점)
+- **비드 실패**: |비드 - 실제| × -10점 (비드 0 실패: 라운드 수 × -10점)
+- **보너스** (`calculateTrickBonus`):
+  - Skull King으로 Pirate 잡을 때 +30점/마리
+  - Mermaid가 Skull King을 잡을 때 +20점
+
+## Skulking 재연결 (roomJoined에 포함되는 상태)
+
+`buildSkulkingState()` 헬퍼로 계산:
+- `gameStarted`, `myHand`, `playerHands`, `skulkingRound`, `skulkingPhase`
+- `skulkingCurrentBidPlayerId`, `bids`, `tricks`, `scores`, `roundScores`
+- `skulkingCurrentPlayerId`, `currentTrick`
 
 ## 재연결 시스템
 
