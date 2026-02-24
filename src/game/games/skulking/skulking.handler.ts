@@ -693,10 +693,10 @@ export class SkulkingHandler {
     }
 
     if (winnerCardType === 'sk-mermaid') {
-      // Mermaid가 Skull King을 이기면 +20점 (Skull King이 트릭에 있음)
+      // Mermaid가 Skull King을 이기면 +50점 (Skull King이 트릭에 있음)
       const hasSkullKing = trick.some((e) => e.card.type === 'sk-skulking');
       if (hasSkullKing) {
-        bonus += 20;
+        bonus += 50;
       }
     }
 

@@ -210,7 +210,7 @@ if (leadEntry) {
 - **비드 실패**: |비드 - 실제| × -10점 (비드 0 실패: 라운드 수 × -10점)
 - **보너스** (`calculateTrickBonus`):
   - Skull King으로 Pirate 잡을 때 +30점/마리
-  - Mermaid가 Skull King을 잡을 때 +20점
+  - Mermaid가 Skull King을 잡을 때 +50점
 
 ## Skulking 재연결 (roomJoined에 포함되는 상태)
 
