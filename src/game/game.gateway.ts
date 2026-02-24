@@ -684,6 +684,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   // ── 스컬킹 전용 이벤트 ─────────────────────────────────────
 
+  @SubscribeMessage('skulkingDrawFirstCard')
+  handleSkulkingDrawFirstCard(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.skulkingHandler.handleFirstDraw(data, client);
+  }
+
   @SubscribeMessage('skulkingBid')
   handleSkulkingBid(
     @MessageBody() data: { roomName: string; bid: number },

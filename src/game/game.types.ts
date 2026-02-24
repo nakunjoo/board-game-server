@@ -61,6 +61,11 @@ export interface GameState {
   trophies?: Map<string, number>; // playerId → 트로피 수 (최대 3)
   // 따낸 카드 (Spice 게임) - 도전/도전만료로 더미를 획득한 카드들
   wonCards?: Map<string, Card[]>; // playerId → 획득한 카드 목록
+  // 선뽑기 (Skulking 게임)
+  skulkingFirstDraw?: Map<string, number>;  // playerId → 뽑은 숫자
+  skulkingFirstDrawDone?: Set<string>;       // 뽑기 완료한 playerId
+  skulkingFirstDrawPool?: number[];          // 남은 숫자 풀 (1~10 셔플)
+
   // 스컬킹 게임 전용
   skulkingRound?: number; // 현재 라운드 (1~10)
   skulkingPhase?: 'bid' | 'play'; // 현재 페이즈

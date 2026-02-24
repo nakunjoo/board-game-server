@@ -6,6 +6,12 @@ NestJS 기반 실시간 멀티플레이어 카드 게임 서버
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-02-24 | `skulking.handler.ts`: Follow suit 서버 검증 수정 — `currentTrick[0]` 기준이 아닌 첫 번째 숫자 수트 카드 기준으로 리드 수트 결정 |
+| 2026-02-24 | `skulking.handler.ts`: `handlePlayCard` follow suit 버그 수정 — `hand.some((c) => c.type === leadType)` 전체 손패 체크로 변경 |
+| 2026-02-24 | `skulking.handler.ts`: 선뽑기 추가 — `handleStartGame`이 `handleFirstDraw` 호출, `startMainGame(firstPlayerId)` 분리 |
+| 2026-02-24 | `skulking.handler.ts`: `startNewRound`에서 `skulkingLeadPlayerId`(마지막 트릭 승자)를 첫 비드 플레이어로 설정 |
+| 2026-02-24 | `game.gateway.ts`: `skulkingDrawFirstCard` 이벤트 핸들러 추가 |
+| 2026-02-24 | `game.types.ts`: `skulkingFirstDraw`, `skulkingFirstDrawDone`, `skulkingFirstDrawPool` 필드 추가 |
 | 2026-02-23 | 스컬킹(Skull King) 게임 추가: `engines/skulking.engine.ts`, `games/skulking/skulking.handler.ts` 신규 생성 |
 | 2026-02-23 | `game.types.ts`: CardType에 `sk-black/yellow/purple/green/escape/pirate/mermaid/skulking/tigress` 추가, GameState에 skulking 전용 필드 추가 |
 | 2026-02-23 | `game.module.ts`: SkulkingEngine, SkulkingHandler 등록 |
@@ -146,7 +152,7 @@ src/
 
 ## Skulking 게임 이벤트
 
-**클라이언트 → 서버:** `startGame`, `skulkingBid`, `skulkingPlayCard`, `skulkingNextRound`
+**클라이언트 → 서버:** `startGame`, `skulkingDrawFirstCard`, `skulkingBid`, `skulkingPlayCard`, `skulkingNextRound`
 
 **서버 → 클라이언트:**
 | 이벤트 | 내용 |
@@ -164,9 +170,39 @@ src/
 ## Skulking 트릭 승자 판정 (`skulking.handler.ts`)
 
 ```
-☠ Skull King (Mermaid 없을 때) > M Mermaid (Skull King 있을 때) > P Pirate/Tigress(Pirate) > ♠ 검정 수트(높은 숫자) > 리드 수트(높은 숫자) > 나머지
-E Escape는 항상 짐
+인어(해골왕 있을 때) > 해골왕 > 해적/타이그레스(해적) > 인어(해골왕 없을 때) > ♠ 검정 수트(높은 숫자) > 리드 수트(높은 숫자) > 나머지
+E 탈출은 항상 짐. 여러 명이 같은 특수카드를 내면 먼저 낸 사람이 이김 (trick[0] 폴백)
 ```
+
+## Skulking 리드 수트 결정 규칙
+
+- 트릭에서 **처음으로 나온 숫자 수트 카드**가 리드 수트 (`sk-black/yellow/purple/green`)
+- 특수카드(`sk-escape/pirate/mermaid/skulking/tigress`)는 리드 수트가 되지 않음
+- 손패에 리드 수트가 있으면 리드 수트 또는 특수 카드만 낼 수 있음
+
+```typescript
+// handlePlayCard 내 리드 수트 검증
+const leadEntry = currentTrick.find((e) => this.isNumberSuit(this.getEffectiveType(e)));
+if (leadEntry) {
+  const leadType = this.getEffectiveType(leadEntry);
+  if (!SPECIAL_TYPES.includes(playedType) && playedType !== leadType) {
+    const hasLeadSuit = hand.some((c) => c.type === leadType);
+    if (hasLeadSuit) { /* error */ }
+  }
+}
+```
+
+## Skulking 선뽑기 흐름
+
+1. `startGame` → `handleStartGame` → 선뽑기 초기화 → `skulkingFirstDrawStarted` 브로드캐스트
+2. 각 플레이어 `skulkingDrawFirstCard` 전송 → `skulkingFirstDrawResult`(개인) + `skulkingFirstDrawProgress`(전체)
+3. 전원 완료 → `skulkingFirstDrawFinished` 브로드캐스트 → 2초 후 `startMainGame(firstPlayerId)`
+4. `startMainGame`: 선뽑기 상태 초기화 → 라운드 시작
+
+## Skulking 라운드 리드 플레이어
+
+- `skulkingLeadPlayerId`: `startTrick()`에서 갱신 (매 트릭 승자)
+- `startNewRound()`에서 `skulkingLeadPlayerId` 기반으로 비드 순서 설정 → 마지막 트릭 승자가 다음 라운드 첫 비드
 
 ## Skulking 점수 계산
 
@@ -182,6 +218,7 @@ E Escape는 항상 짐
 - `gameStarted`, `myHand`, `playerHands`, `skulkingRound`, `skulkingPhase`
 - `skulkingCurrentBidPlayerId`, `bids`, `tricks`, `scores`, `roundScores`
 - `skulkingCurrentPlayerId`, `currentTrick`
+- 선뽑기 중이면: `skulkingIsFirstDraw`, `skulkingDrawnCount`, `skulkingTotalCount`
 
 ## 재연결 시스템
 
