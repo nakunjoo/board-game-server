@@ -6,6 +6,9 @@ NestJS 기반 실시간 멀티플레이어 카드 게임 서버
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-02-26 | `game.types.ts`: `GameState`에 `roundBidTrickHistory` 필드 추가 (`Array<{ round, bids, tricks }>`) |
+| 2026-02-26 | `skulking.handler.ts`: 게임 시작 시 `roundBidTrickHistory = []` 초기화, `endRound()`에서 완료된 라운드 bid/trick 히스토리 push 후 `skulkingRoundResult` 이벤트에 포함 |
+| 2026-02-26 | `game.gateway.ts` (`buildSkulkingState`): 재연결 시 `roundBidTrickHistory` 포함하여 `roomJoined`에 반환 |
 | 2026-02-25 | `skulking.handler.ts`: 비드 단계 20초 타이머 추가 — 만료 시 미제출 플레이어 전원 0으로 자동 제출 후 플레이 페이즈 진행 (`startBidTimer`, `clearBidTimer`) |
 | 2026-02-25 | `skulking.handler.ts`: 플레이 단계 20초 타이머 추가 — 만료 시 현재 차례 플레이어가 낼 수 있는 카드(리드 수트 팔로우 규칙 적용) 중 랜덤 자동 제출 (`startPlayTimer`, `clearPlayTimer`) |
 | 2026-02-25 | `skulking.handler.ts`: `skulkingTurnUpdate`에 `isNewTrick` 플래그 추가 — 트릭 중간 차례 변경(`false`) vs 새 트릭 시작(`true`) 구분 |
@@ -121,6 +124,11 @@ src/
   skulkingNextRoundReady?: Set<string>      // 다음 라운드 준비 완료한 playerId
   skulkingBidTimer?: ReturnType<typeof setTimeout>   // 비드 단계 자동 제출 타이머
   skulkingPlayTimer?: ReturnType<typeof setTimeout>  // 플레이 단계 자동 제출 타이머
+  roundBidTrickHistory?: Array<{                    // 완료된 라운드별 bid/trick 기록 (통계 모달 + 재연결 복원용)
+    round: number;
+    bids: Record<string, number>;
+    tricks: Record<string, number>;
+  }>
 }
 ```
 
@@ -176,7 +184,7 @@ src/
 | `myHandUpdate` | 내 손패 업데이트 (myHand) — 카드 낸 플레이어에게 개인 전송 |
 | `skulkingTurnUpdate` | 다음 차례 (currentPlayerId, isNewTrick: boolean) — `isNewTrick: true`면 새 트릭 시작, `false`면 같은 트릭 내 차례 변경 |
 | `skulkingTrickResult` | 트릭 결과 (winnerId, tricks) |
-| `skulkingRoundResult` | 라운드 결과 (round, bids, tricks, roundScores, totalScores, roundScoreHistory, isLastRound) |
+| `skulkingRoundResult` | 라운드 결과 (round, bids, tricks, roundScores, totalScores, roundScoreHistory, **roundBidTrickHistory**, isLastRound) |
 | `skulkingGameOver` | 최종 결과 (finalScores, ranking, roundScoreHistory) |
 
 ## Skulking 타이머
@@ -244,6 +252,7 @@ if (leadEntry) {
 - `gameStarted`, `myHand`, `playerHands`, `skulkingRound`, `skulkingPhase`
 - `skulkingCurrentBidPlayerId`, `bids`, `tricks`, `scores`, `roundScores`
 - `skulkingCurrentPlayerId`, `currentTrick`
+- `roundBidTrickHistory` (완료된 라운드별 bid/trick 누적 기록 — 통계 모달 새로고침 복원용)
 - 선뽑기 중이면: `skulkingIsFirstDraw`, `skulkingDrawnCount`, `skulkingTotalCount`
 
 ## 재연결 시스템

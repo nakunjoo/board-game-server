@@ -143,6 +143,7 @@ export class SkulkingHandler {
     room.state.tricks = new Map();
     room.state.scores = new Map();
     room.state.roundScores = new Map();
+    room.state.roundBidTrickHistory = [];
     room.state.currentTrick = [];
     room.state.skulkingTrickCount = 0;
     room.state.skulkingNextRoundReady = new Set();
@@ -599,6 +600,14 @@ export class SkulkingHandler {
       room.state.roundScores!.set(playerId, history);
     });
 
+    // 라운드 비드/트릭 히스토리 저장
+    if (!room.state.roundBidTrickHistory) room.state.roundBidTrickHistory = [];
+    room.state.roundBidTrickHistory.push({
+      round,
+      bids: Object.fromEntries(room.state.bids!),
+      tricks: Object.fromEntries(room.state.tricks!),
+    });
+
     room.state.skulkingNextRoundReady = new Set();
     room.state.skulkingPhase = undefined as unknown as 'bid';
 
@@ -609,6 +618,7 @@ export class SkulkingHandler {
       roundScores: roundScoreMap,
       totalScores: Object.fromEntries(room.state.scores!),
       roundScoreHistory: Object.fromEntries(room.state.roundScores!),
+      roundBidTrickHistory: room.state.roundBidTrickHistory,
       isLastRound: round >= TOTAL_ROUNDS,
     });
   }
@@ -814,6 +824,7 @@ export class SkulkingHandler {
         card: e.card,
         tigressDeclared: e.tigressDeclared,
       })),
+      roundBidTrickHistory: room.state.roundBidTrickHistory ?? [],
     };
   }
 }

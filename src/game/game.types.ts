@@ -75,6 +75,7 @@ export interface GameState {
   tricks?: Map<string, number>; // playerId → 획득 트릭 수
   scores?: Map<string, number>; // playerId → 누적 점수
   roundScores?: Map<string, number[]>; // playerId → 라운드별 점수 기록
+  roundBidTrickHistory?: Array<{ round: number; bids: Record<string, number>; tricks: Record<string, number> }>; // 라운드별 비드/트릭 기록
   skulkingLeadPlayerId?: string; // 현재 트릭 리드 플레이어
   skulkingCurrentPlayerId?: string; // 현재 카드 낼 차례 플레이어
   skulkingTrickOrder?: string[]; // 현재 트릭 내는 순서 (playerId 배열)
