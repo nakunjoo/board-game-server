@@ -147,20 +147,15 @@ export class SkulkingHandler {
     room.state.skulkingTrickCount = 0;
     room.state.skulkingNextRoundReady = new Set();
 
-    // 비드 순서: 선 플레이어부터 시작
     const playerIds = this.getPlayerIds(room);
-    const firstIdx = playerIds.indexOf(firstPlayerId);
-    const bidOrder = firstIdx >= 0
-      ? [...playerIds.slice(firstIdx), ...playerIds.slice(0, firstIdx)]
-      : playerIds;
 
     playerIds.forEach((pid) => {
       room.state.scores!.set(pid, 0);
       room.state.roundScores!.set(pid, []);
     });
 
-    room.state.skulkingBidOrder = bidOrder;
-    room.state.skulkingCurrentBidIndex = 0;
+    // 선 플레이어 기록 (트릭 플레이 선 지정용)
+    room.state.skulkingLeadPlayerId = firstPlayerId;
 
     this.dealCards(room, 1);
 
@@ -178,16 +173,16 @@ export class SkulkingHandler {
       });
     });
 
-    // 첫 비드 차례 알림
-    const firstBidPlayerId = bidOrder[0];
+    // 동시 비드 단계 시작
     this.ctx.broadcastToRoom(roomName, 'skulkingBidPhase', {
       round: 1,
-      currentBidPlayerId: firstBidPlayerId,
-      currentBidNickname: this.ctx.getNicknameByPlayerId(room, firstBidPlayerId),
       bids: {},
       bidCount: 0,
       totalPlayers: room.clients.size,
+      timeLimit: 20,
     });
+
+    this.startBidTimer(roomName);
   }
 
   // ── 비드 제출 ─────────────────────────────────────────────
@@ -207,12 +202,10 @@ export class SkulkingHandler {
     }
 
     const playerId = room.playerIds.get(client)!;
-    const bidOrder = room.state.skulkingBidOrder!;
-    const currentBidIndex = room.state.skulkingCurrentBidIndex!;
-    const expectedPlayerId = bidOrder[currentBidIndex];
 
-    if (playerId !== expectedPlayerId) {
-      this.ctx.sendToClient(client, 'error', { message: '지금 비드 차례가 아닙니다' });
+    // 이미 비드한 경우 무시
+    if (room.state.bids!.has(playerId)) {
+      this.ctx.sendToClient(client, 'error', { message: '이미 비드를 제출했습니다' });
       return;
     }
 
@@ -223,25 +216,24 @@ export class SkulkingHandler {
     }
 
     room.state.bids!.set(playerId, bid);
-    room.state.skulkingCurrentBidIndex = currentBidIndex + 1;
 
-    const nextBidIndex = currentBidIndex + 1;
-    const allBidsDone = nextBidIndex >= bidOrder.length;
+    const bidCount = room.state.bids!.size;
+    const totalPlayers = room.clients.size;
+    const allBidsDone = bidCount >= totalPlayers;
 
-    // 비드 공개 (순차)
+    // 비드 현황 브로드캐스트 (동시)
     this.ctx.broadcastToRoom(roomName, 'skulkingBidUpdate', {
       playerId,
       nickname: this.ctx.getNicknameByPlayerId(room, playerId),
       bid,
       bids: Object.fromEntries(room.state.bids!),
-      bidCount: room.state.bids!.size,
-      totalPlayers: room.clients.size,
-      nextBidPlayerId: allBidsDone ? null : bidOrder[nextBidIndex],
-      nextBidNickname: allBidsDone ? null : this.ctx.getNicknameByPlayerId(room, bidOrder[nextBidIndex]),
+      bidCount,
+      totalPlayers,
     });
 
     if (allBidsDone) {
-      // 모든 비드 완료 → 트릭 플레이 시작
+      // 타이머 취소 후 트릭 플레이 시작
+      this.clearBidTimer(room);
       this.startPlayPhase(roomName);
     }
   }
@@ -264,6 +256,8 @@ export class SkulkingHandler {
       this.ctx.sendToClient(client, 'error', { message: '현재 플레이 단계가 아닙니다' });
       return;
     }
+
+    this.clearPlayTimer(room);
 
     const playerId = room.playerIds.get(client)!;
     if (playerId !== room.state.skulkingCurrentPlayerId) {
@@ -308,6 +302,9 @@ export class SkulkingHandler {
     const card = hand.splice(cardIndex, 1)[0];
     room.state.hands.set(client, hand);
 
+    // 카드 낸 플레이어에게 손패 업데이트 전송
+    this.ctx.sendToClient(client, 'myHandUpdate', { myHand: hand });
+
     const trickEntry = { playerId, card, tigressDeclared: tigressDeclared as 'escape' | 'pirate' | undefined };
     currentTrick.push(trickEntry);
 
@@ -339,7 +336,9 @@ export class SkulkingHandler {
       this.ctx.broadcastToRoom(roomName, 'skulkingTurnUpdate', {
         currentPlayerId: trickOrder[nextIndex],
         currentNickname: this.ctx.getNicknameByPlayerId(room, trickOrder[nextIndex]),
+        isNewTrick: false,
       });
+      this.startPlayTimer(room);
     }
   }
 
@@ -393,8 +392,45 @@ export class SkulkingHandler {
     }
   }
 
+  private startBidTimer(roomName: string): void {
+    const room = this.ctx.rooms.get(roomName);
+    if (!room) return;
+
+    this.clearBidTimer(room);
+
+    room.state.skulkingBidTimer = setTimeout(() => {
+      const r = this.ctx.rooms.get(roomName);
+      if (!r || r.state.skulkingPhase !== 'bid') return;
+
+      // 아직 비드 안 한 플레이어는 0으로 자동 제출
+      r.clients.forEach((c) => {
+        const pid = r.playerIds.get(c)!;
+        if (!r.state.bids!.has(pid)) {
+          r.state.bids!.set(pid, 0);
+        }
+      });
+
+      this.ctx.broadcastToRoom(roomName, 'skulkingBidUpdate', {
+        bids: Object.fromEntries(r.state.bids!),
+        bidCount: r.state.bids!.size,
+        totalPlayers: r.clients.size,
+        autoSubmitted: true,
+      });
+
+      this.startPlayPhase(roomName);
+    }, 20000);
+  }
+
+  private clearBidTimer(room: ReturnType<typeof this.ctx.rooms.get> & object): void {
+    if (room.state.skulkingBidTimer) {
+      clearTimeout(room.state.skulkingBidTimer);
+      room.state.skulkingBidTimer = undefined;
+    }
+  }
+
   private startPlayPhase(roomName: string): void {
     const room = this.ctx.rooms.get(roomName)!;
+    this.clearBidTimer(room);
     room.state.skulkingPhase = 'play';
     room.state.currentTrick = [];
     room.state.skulkingTrickCount = 0;
@@ -415,7 +451,6 @@ export class SkulkingHandler {
 
   private startTrick(room: ReturnType<typeof this.ctx.rooms.get> & object, leadPlayerId: string): void {
     room.state.currentTrick = [];
-    // 리드 플레이어부터 시작하는 트릭 순서
     const playerIds = this.getPlayerIds(room);
     const leadIndex = playerIds.indexOf(leadPlayerId);
     const trickOrder = [
@@ -426,6 +461,63 @@ export class SkulkingHandler {
     room.state.skulkingTrickOrder = trickOrder;
     room.state.skulkingTrickIndex = 0;
     room.state.skulkingCurrentPlayerId = trickOrder[0];
+    this.startPlayTimer(room);
+  }
+
+  private startPlayTimer(room: ReturnType<typeof this.ctx.rooms.get> & object): void {
+    this.clearPlayTimer(room);
+
+    // roomName을 room에서 찾기
+    let roomName = '';
+    this.ctx.rooms.forEach((r, name) => { if (r === room) roomName = name; });
+    if (!roomName) return;
+
+    room.state.skulkingPlayTimer = setTimeout(() => {
+      const r = this.ctx.rooms.get(roomName);
+      if (!r || r.state.skulkingPhase !== 'play') return;
+
+      const currentPlayerId = r.state.skulkingCurrentPlayerId;
+      if (!currentPlayerId) return;
+
+      // 현재 차례 플레이어의 client 찾기
+      let currentClient: WebSocket | null = null;
+      r.playerIds.forEach((pid, c) => { if (pid === currentPlayerId) currentClient = c; });
+      if (!currentClient) return;
+
+      const hand = r.state.hands.get(currentClient) ?? [];
+      if (hand.length === 0) return;
+
+      // 낼 수 있는 카드 목록 (리드 수트 팔로우 규칙 적용)
+      const currentTrick = r.state.currentTrick!;
+      const leadEntry = currentTrick.find((e) => this.isNumberSuit(this.getEffectiveType(e)));
+      const leadType = leadEntry ? this.getEffectiveType(leadEntry) : null;
+      const hasLeadSuit = leadType !== null && hand.some((c) => c.type === leadType);
+
+      let playableIndices: number[];
+      if (hasLeadSuit) {
+        playableIndices = hand
+          .map((c, i) => ({ c, i }))
+          .filter(({ c }) => c.type === leadType || SPECIAL_TYPES.includes(c.type))
+          .map(({ i }) => i);
+      } else {
+        playableIndices = hand.map((_, i) => i);
+      }
+
+      const cardIndex = playableIndices[Math.floor(Math.random() * playableIndices.length)];
+      const card = hand[cardIndex];
+
+      // Tigress면 escape로 자동 선언
+      const tigressDeclared = card.type === 'sk-tigress' ? 'escape' : undefined;
+
+      this.handlePlayCard({ roomName, cardIndex, tigressDeclared }, currentClient);
+    }, 20000);
+  }
+
+  private clearPlayTimer(room: ReturnType<typeof this.ctx.rooms.get> & object): void {
+    if (room.state.skulkingPlayTimer) {
+      clearTimeout(room.state.skulkingPlayTimer);
+      room.state.skulkingPlayTimer = undefined;
+    }
   }
 
   private resolveTrick(roomName: string): void {
@@ -476,6 +568,7 @@ export class SkulkingHandler {
         this.ctx.broadcastToRoom(roomName, 'skulkingTurnUpdate', {
           currentPlayerId: winnerId,
           currentNickname: winnerNickname,
+          isNewTrick: true,
         });
       }, 1500);
     }
@@ -534,18 +627,6 @@ export class SkulkingHandler {
     room.state.skulkingTrickCount = 0;
     room.state.skulkingNextRoundReady = new Set();
 
-    const playerIds = this.getPlayerIds(room);
-
-    // 이전 라운드 마지막 트릭 승자가 새 라운드 선 (없으면 첫 번째 플레이어)
-    const leadPlayerId = room.state.skulkingLeadPlayerId ?? playerIds[0];
-    const leadIdx = playerIds.indexOf(leadPlayerId);
-    const bidOrder = leadIdx >= 0
-      ? [...playerIds.slice(leadIdx), ...playerIds.slice(0, leadIdx)]
-      : playerIds;
-
-    room.state.skulkingBidOrder = bidOrder;
-    room.state.skulkingCurrentBidIndex = 0;
-
     this.dealCards(room, round);
 
     room.clients.forEach((c) => {
@@ -559,15 +640,16 @@ export class SkulkingHandler {
       });
     });
 
-    const firstBidPlayerId = bidOrder[0];
+    // 동시 비드 단계 시작
     this.ctx.broadcastToRoom(roomName, 'skulkingBidPhase', {
       round,
-      currentBidPlayerId: firstBidPlayerId,
-      currentBidNickname: this.ctx.getNicknameByPlayerId(room, firstBidPlayerId),
       bids: {},
       bidCount: 0,
       totalPlayers: room.clients.size,
+      timeLimit: 20,
     });
+
+    this.startBidTimer(roomName);
   }
 
   private endGame(roomName: string): void {
@@ -720,10 +802,7 @@ export class SkulkingHandler {
     return {
       skulkingRound: room.state.skulkingRound,
       skulkingPhase: room.state.skulkingPhase,
-      skulkingCurrentBidPlayerId:
-        room.state.skulkingBidOrder && room.state.skulkingCurrentBidIndex !== undefined
-          ? room.state.skulkingBidOrder[room.state.skulkingCurrentBidIndex] ?? null
-          : null,
+      skulkingCurrentBidPlayerId: null,
       bids: room.state.bids ? Object.fromEntries(room.state.bids) : {},
       tricks: room.state.tricks ? Object.fromEntries(room.state.tricks) : {},
       scores: room.state.scores ? Object.fromEntries(room.state.scores) : {},
