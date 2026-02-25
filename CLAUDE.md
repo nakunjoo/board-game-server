@@ -6,6 +6,11 @@ NestJS 기반 실시간 멀티플레이어 카드 게임 서버
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-02-25 | `skulking.handler.ts`: 비드 단계 20초 타이머 추가 — 만료 시 미제출 플레이어 전원 0으로 자동 제출 후 플레이 페이즈 진행 (`startBidTimer`, `clearBidTimer`) |
+| 2026-02-25 | `skulking.handler.ts`: 플레이 단계 20초 타이머 추가 — 만료 시 현재 차례 플레이어가 낼 수 있는 카드(리드 수트 팔로우 규칙 적용) 중 랜덤 자동 제출 (`startPlayTimer`, `clearPlayTimer`) |
+| 2026-02-25 | `skulking.handler.ts`: `skulkingTurnUpdate`에 `isNewTrick` 플래그 추가 — 트릭 중간 차례 변경(`false`) vs 새 트릭 시작(`true`) 구분 |
+| 2026-02-25 | `skulking.handler.ts`: `handlePlayCard`에서 카드 낸 플레이어에게 `myHandUpdate` 개인 전송 (손패에서 낸 카드만 제거) |
+| 2026-02-25 | `game.types.ts`: `skulkingBidTimer`, `skulkingPlayTimer` 필드 추가 (`ReturnType<typeof setTimeout>`) |
 | 2026-02-24 | `skulking.handler.ts`: Follow suit 서버 검증 수정 — `currentTrick[0]` 기준이 아닌 첫 번째 숫자 수트 카드 기준으로 리드 수트 결정 |
 | 2026-02-24 | `skulking.handler.ts`: `handlePlayCard` follow suit 버그 수정 — `hand.some((c) => c.type === leadType)` 전체 손패 체크로 변경 |
 | 2026-02-24 | `skulking.handler.ts`: 선뽑기 추가 — `handleStartGame`이 `handleFirstDraw` 호출, `startMainGame(firstPlayerId)` 분리 |
@@ -114,6 +119,8 @@ src/
   currentTrick?: TrickEntry[]               // 현재 트릭 카드들
   skulkingTrickCount?: number               // 현재 라운드 진행된 트릭 수
   skulkingNextRoundReady?: Set<string>      // 다음 라운드 준비 완료한 playerId
+  skulkingBidTimer?: ReturnType<typeof setTimeout>   // 비드 단계 자동 제출 타이머
+  skulkingPlayTimer?: ReturnType<typeof setTimeout>  // 플레이 단계 자동 제출 타이머
 }
 ```
 
@@ -157,15 +164,34 @@ src/
 **서버 → 클라이언트:**
 | 이벤트 | 내용 |
 |--------|------|
+| `skulkingFirstDrawStarted` | 선뽑기 시작 |
+| `skulkingFirstDrawResult` | 내가 뽑은 숫자 (drawnNumber, drawnCount) — 개인 전송 |
+| `skulkingFirstDrawProgress` | 전체 뽑기 진행 현황 (drawnCount) |
+| `skulkingFirstDrawFinished` | 선뽑기 완료 (results, firstPlayerId, firstNickname) |
 | `skulkingRoundStarted` | 라운드 시작 (round, myHand, playerHands, scores) |
-| `skulkingBidPhase` | 비드 단계 시작 (round, currentBidPlayerId, bids) |
-| `skulkingBidUpdate` | 비드 제출 현황 (bids, nextBidPlayerId) |
+| `skulkingBidPhase` | 비드 단계 시작 (round, bids) — 동시 선언 방식, 20초 타이머 시작 |
+| `skulkingBidUpdate` | 비드 제출 현황 (bids) |
 | `skulkingPlayPhase` | 플레이 단계 시작 (leadPlayerId, bids) |
 | `skulkingCardPlayed` | 카드 냄 (currentTrick, playerHands) |
-| `skulkingTurnUpdate` | 트릭 완료 후 다음 리드 플레이어 (currentPlayerId) |
-| `skulkingTrickResult` | 트릭 결과 (tricks) |
+| `myHandUpdate` | 내 손패 업데이트 (myHand) — 카드 낸 플레이어에게 개인 전송 |
+| `skulkingTurnUpdate` | 다음 차례 (currentPlayerId, isNewTrick: boolean) — `isNewTrick: true`면 새 트릭 시작, `false`면 같은 트릭 내 차례 변경 |
+| `skulkingTrickResult` | 트릭 결과 (winnerId, tricks) |
 | `skulkingRoundResult` | 라운드 결과 (round, bids, tricks, roundScores, totalScores, roundScoreHistory, isLastRound) |
 | `skulkingGameOver` | 최종 결과 (finalScores, ranking, roundScoreHistory) |
+
+## Skulking 타이머
+
+### 비드 타이머 (`startBidTimer` / `clearBidTimer`)
+- 비드 페이즈 시작 시 **20초** 타이머 설정
+- 만료 시 아직 비드 미제출 플레이어 전원에게 0 자동 제출 → 플레이 페이즈 진행
+- `handleBid`에서 모든 플레이어 비드 완료 시 타이머 취소
+
+### 플레이 타이머 (`startPlayTimer` / `clearPlayTimer`)
+- 각 플레이어 차례 시작 시 **20초** 타이머 설정 (`startTrick`, `skulkingTurnUpdate` 발생 시마다)
+- 만료 시 현재 차례 플레이어의 유효한 카드 중 랜덤 자동 제출
+  - 리드 수트 팔로우 규칙 적용 (손패에 리드 수트 있으면 해당 수트 또는 특수 카드만)
+  - Tigress 자동 제출 시 `escape`로 선언
+- `handlePlayCard` 진입 시 타이머 취소 (`clearPlayTimer`)
 
 ## Skulking 트릭 승자 판정 (`skulking.handler.ts`)
 
