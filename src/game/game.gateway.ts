@@ -720,4 +720,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): void {
     this.skulkingHandler.handleNextRound(data, client);
   }
+
+  @SubscribeMessage('skulkingTestStart')
+  handleSkulkingTestStart(
+    @MessageBody() data: { roomName: string; round: number; hands: Record<string, import('./game.types').Card[]> },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.skulkingHandler.handleTestStart(data, client);
+  }
 }

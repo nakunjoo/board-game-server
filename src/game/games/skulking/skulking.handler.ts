@@ -147,6 +147,7 @@ export class SkulkingHandler {
     room.state.currentTrick = [];
     room.state.skulkingTrickCount = 0;
     room.state.skulkingNextRoundReady = new Set();
+    room.state.pendingBonus = new Map();
 
     const playerIds = this.getPlayerIds(room);
 
@@ -532,13 +533,12 @@ export class SkulkingHandler {
     const curTricks = room.state.tricks!.get(winnerId) ?? 0;
     room.state.tricks!.set(winnerId, curTricks + 1);
 
-    // 보너스 계산
+    // 보너스 계산 (점수 반영은 endRound에서 비드 성공 시에만)
     const bonus = this.calculateTrickBonus(currentTrick, winnerId);
 
-    // 누적 점수에 즉시 보너스 반영
     if (bonus > 0) {
-      const curScore = room.state.scores!.get(winnerId) ?? 0;
-      room.state.scores!.set(winnerId, curScore + bonus);
+      const curBonus = room.state.pendingBonus?.get(winnerId) ?? 0;
+      room.state.pendingBonus!.set(winnerId, curBonus + bonus);
     }
 
     room.state.skulkingTrickCount = (room.state.skulkingTrickCount ?? 0) + 1;
@@ -582,12 +582,19 @@ export class SkulkingHandler {
 
     room.state.bids!.forEach((bid, playerId) => {
       const won = room.state.tricks!.get(playerId) ?? 0;
+      const bidSuccess = bid === won;
       let roundScore: number;
 
       if (bid === 0) {
-        roundScore = bid === won ? round * 10 : -(round * 10);
+        roundScore = bidSuccess ? round * 10 : -(round * 10);
       } else {
-        roundScore = bid === won ? bid * 20 : Math.abs(bid - won) * -10;
+        roundScore = bidSuccess ? bid * 20 : Math.abs(bid - won) * -10;
+      }
+
+      // 비드 성공한 경우에만 트릭 보너스 추가
+      if (bidSuccess) {
+        const bonus = room.state.pendingBonus?.get(playerId) ?? 0;
+        roundScore += bonus;
       }
 
       roundScoreMap[playerId] = roundScore;
@@ -599,6 +606,8 @@ export class SkulkingHandler {
       history.push(roundScore);
       room.state.roundScores!.set(playerId, history);
     });
+
+    room.state.pendingBonus = new Map();
 
     // 라운드 비드/트릭 히스토리 저장
     if (!room.state.roundBidTrickHistory) room.state.roundBidTrickHistory = [];
@@ -636,6 +645,7 @@ export class SkulkingHandler {
     room.state.currentTrick = [];
     room.state.skulkingTrickCount = 0;
     room.state.skulkingNextRoundReady = new Set();
+    room.state.pendingBonus = new Map();
 
     this.dealCards(room, round);
 
@@ -686,6 +696,101 @@ export class SkulkingHandler {
     });
   }
 
+  // ── 테스트 모드 (dev 전용) ────────────────────────────────
+
+  handleTestStart(
+    data: { roomName: string; round: number; hands: Record<string, Card[]> },
+    client: WebSocket,
+  ): void {
+    if (process.env.NODE_ENV === 'production') {
+      this.ctx.sendToClient(client, 'error', { message: '테스트 모드는 개발 환경에서만 사용할 수 있습니다' });
+      return;
+    }
+
+    const { roomName, round, hands } = data;
+    const room = this.ctx.rooms.get(roomName);
+
+    if (!room || !room.clients.has(client)) {
+      this.ctx.sendToClient(client, 'error', { message: `'${roomName}' 방에 참여하고 있지 않습니다` });
+      return;
+    }
+
+    if (room.playerIds.get(client) !== room.hostPlayerId) {
+      this.ctx.sendToClient(client, 'error', { message: '방장만 테스트를 시작할 수 있습니다' });
+      return;
+    }
+
+    if (round < 1 || round > TOTAL_ROUNDS) {
+      this.ctx.sendToClient(client, 'error', { message: `라운드는 1~${TOTAL_ROUNDS} 사이여야 합니다` });
+      return;
+    }
+
+    // 진행 중인 타이머 모두 정리
+    this.clearBidTimer(room);
+    this.clearPlayTimer(room);
+
+    // 게임 상태 초기화
+    room.gameStarted = true;
+    room.gameFinished = false;
+    room.gameOver = false;
+    room.state.skulkingFirstDraw = undefined;
+    room.state.skulkingFirstDrawDone = undefined;
+    room.state.skulkingFirstDrawPool = undefined;
+
+    room.state.skulkingRound = round;
+    room.state.skulkingPhase = 'bid';
+    room.state.bids = new Map();
+    room.state.tricks = new Map();
+    room.state.scores = new Map();
+    room.state.roundScores = new Map();
+    room.state.roundBidTrickHistory = [];
+    room.state.currentTrick = [];
+    room.state.skulkingTrickCount = 0;
+    room.state.skulkingNextRoundReady = new Set();
+    room.state.pendingBonus = new Map();
+
+    const playerIds = this.getPlayerIds(room);
+    playerIds.forEach((pid) => {
+      room.state.scores!.set(pid, 0);
+      room.state.roundScores!.set(pid, []);
+      room.state.tricks!.set(pid, 0);
+    });
+
+    // 지정된 손패 배분
+    room.clients.forEach((c) => {
+      const pid = room.playerIds.get(c)!;
+      const assignedHand = hands[pid] ?? [];
+      room.state.hands.set(c, assignedHand);
+    });
+
+    const firstPlayerId = playerIds[0];
+    room.state.skulkingLeadPlayerId = firstPlayerId;
+
+    // 각 플레이어에게 라운드 시작 이벤트
+    room.clients.forEach((c) => {
+      const myHand = room.state.hands.get(c) ?? [];
+      this.ctx.sendToClient(c, 'skulkingRoundStarted', {
+        round,
+        myHand,
+        playerHands: this.ctx.getPlayerHands(room),
+        scores: Object.fromEntries(room.state.scores!),
+        roundScores: Object.fromEntries(room.state.roundScores!),
+      });
+    });
+
+    this.ctx.broadcastToRoom(roomName, 'skulkingBidPhase', {
+      round,
+      bids: {},
+      bidCount: 0,
+      totalPlayers: room.clients.size,
+      timeLimit: 20,
+    });
+
+    this.startBidTimer(roomName);
+
+    console.log(`[TEST] skulkingTestStart: room=${roomName} round=${round}`);
+  }
+
   // ── 트릭 승자 판정 ────────────────────────────────────────
 
   private determineTrickWinner(
@@ -731,21 +836,18 @@ export class SkulkingHandler {
       ).playerId;
     }
 
-    // 리드 수트 결정 (탈출 카드가 리드인 경우 리드 수트 없음으로 처리)
-    const leadEntry = trick[0];
-    const leadEffectiveType = this.getEffectiveType(leadEntry);
+    // 리드 수트 결정: 탈출 카드를 제외한 첫 번째 숫자 카드가 실제 리드 수트
+    const firstNonEscapeEntry = trick.find((e) => this.isNumberSuit(this.getEffectiveType(e)));
 
-    if (this.isNumberSuit(leadEffectiveType)) {
-      // 리드 수트 중 가장 높은 숫자
-      const leadSuitEntries = trick.filter((e) => e.card.type === leadEffectiveType);
-      if (leadSuitEntries.length > 0) {
-        return leadSuitEntries.reduce((best, e) =>
-          e.card.value > best.card.value ? e : best,
-        ).playerId;
-      }
+    if (firstNonEscapeEntry) {
+      const leadSuitType = this.getEffectiveType(firstNonEscapeEntry);
+      const leadSuitEntries = trick.filter((e) => this.getEffectiveType(e) === leadSuitType);
+      return leadSuitEntries.reduce((best, e) =>
+        e.card.value > best.card.value ? e : best,
+      ).playerId;
     }
 
-    // 모두 Escape(탈출)이거나 리드 수트 없으면 → 첫 번째로 낸 사람
+    // 모두 Escape(탈출)이면 → 첫 번째로 낸 사람
     return trick[0].playerId;
   }
 

@@ -83,6 +83,7 @@ export interface GameState {
   currentTrick?: Array<{ playerId: string; card: Card; tigressDeclared?: 'escape' | 'pirate' }>; // 현재 트릭
   skulkingTrickCount?: number; // 현재 라운드에서 완료된 트릭 수
   skulkingNextRoundReady?: Set<string>; // 다음 라운드 준비 완료한 playerId
+  pendingBonus?: Map<string, number>; // 라운드 중 트릭 보너스 누적 (비드 성공 시에만 반영)
   skulkingBidTimer?: ReturnType<typeof setTimeout>; // 비드 자동 제출 타이머
   skulkingPlayTimer?: ReturnType<typeof setTimeout>; // 플레이 자동 제출 타이머
 }
