@@ -448,6 +448,7 @@ export class SkulkingHandler {
       leadPlayerId,
       leadNickname: this.ctx.getNicknameByPlayerId(room, leadPlayerId),
       bids: Object.fromEntries(room.state.bids!),
+      trickOrder: room.state.skulkingTrickOrder ?? [],
     });
   }
 
@@ -570,6 +571,7 @@ export class SkulkingHandler {
           currentPlayerId: winnerId,
           currentNickname: winnerNickname,
           isNewTrick: true,
+          trickOrder: room.state.skulkingTrickOrder ?? [],
         });
       }, 1500);
     }

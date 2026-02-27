@@ -6,6 +6,14 @@ NestJS 기반 실시간 멀티플레이어 카드 게임 서버
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-02-27 | `skulking.handler.ts`: 트릭 승자 판정 버그 수정 — 탈출카드만 있던 경우 `firstNonEscapeEntry`로 처음 나온 숫자 수트 카드 기준으로 승자 판정 (탈출카드 2장 + 숫자카드 상황 오판정 해결) |
+| 2026-02-27 | `skulking.handler.ts`: `handleTestStart` 추가 — DEV 전용, 방장만 사용 가능, 라운드+손패 지정 후 비드 단계 시작, `pendingBonus` 초기화 포함 |
+| 2026-02-27 | `game.gateway.ts`: `skulkingTestStart` 이벤트 핸들러 추가 |
+| 2026-02-27 | `skulking.handler.ts`: 보너스 점수 로직 수정 — `resolveTrick`에서 즉시 반영하던 방식 → `pendingBonus` Map에 누적 후 `endRound`에서 **비드 성공 시에만** 합산 |
+| 2026-02-27 | `game.types.ts`: `GameState`에 `pendingBonus?: Map<string, number>` 필드 추가 |
+| 2026-02-27 | `skulking.handler.ts`: `pendingBonus` 초기화 — `startMainGame`, `startNewRound`, `handleTestStart` 세 곳에 `room.state.pendingBonus = new Map()` 추가 |
+| 2026-02-27 | `skulking.handler.ts`: `skulkingPlayPhase` 이벤트에 `trickOrder` 포함 (클라이언트에서 리드 플레이어=1번 순서 표시용) |
+| 2026-02-27 | `skulking.handler.ts`: `skulkingTurnUpdate(isNewTrick: true)` 이벤트에 `trickOrder` 포함 (새 트릭 시작 시 순서 갱신) |
 | 2026-02-26 | `game.types.ts`: `GameState`에 `roundBidTrickHistory` 필드 추가 (`Array<{ round, bids, tricks }>`) |
 | 2026-02-26 | `skulking.handler.ts`: 게임 시작 시 `roundBidTrickHistory = []` 초기화, `endRound()`에서 완료된 라운드 bid/trick 히스토리 push 후 `skulkingRoundResult` 이벤트에 포함 |
 | 2026-02-26 | `game.gateway.ts` (`buildSkulkingState`): 재연결 시 `roundBidTrickHistory` 포함하여 `roomJoined`에 반환 |
@@ -129,6 +137,7 @@ src/
     bids: Record<string, number>;
     tricks: Record<string, number>;
   }>
+  pendingBonus?: Map<string, number>               // 트릭 중 획득한 보너스 점수 (비드 성공 시에만 endRound에서 합산)
 }
 ```
 
@@ -167,7 +176,7 @@ src/
 
 ## Skulking 게임 이벤트
 
-**클라이언트 → 서버:** `startGame`, `skulkingDrawFirstCard`, `skulkingBid`, `skulkingPlayCard`, `skulkingNextRound`
+**클라이언트 → 서버:** `startGame`, `skulkingDrawFirstCard`, `skulkingBid`, `skulkingPlayCard`, `skulkingNextRound`, `skulkingTestStart`(DEV 전용, roomName/round/hands)
 
 **서버 → 클라이언트:**
 | 이벤트 | 내용 |
@@ -179,10 +188,10 @@ src/
 | `skulkingRoundStarted` | 라운드 시작 (round, myHand, playerHands, scores) |
 | `skulkingBidPhase` | 비드 단계 시작 (round, bids) — 동시 선언 방식, 20초 타이머 시작 |
 | `skulkingBidUpdate` | 비드 제출 현황 (bids) |
-| `skulkingPlayPhase` | 플레이 단계 시작 (leadPlayerId, bids) |
+| `skulkingPlayPhase` | 플레이 단계 시작 (leadPlayerId, bids, **trickOrder**) |
 | `skulkingCardPlayed` | 카드 냄 (currentTrick, playerHands) |
 | `myHandUpdate` | 내 손패 업데이트 (myHand) — 카드 낸 플레이어에게 개인 전송 |
-| `skulkingTurnUpdate` | 다음 차례 (currentPlayerId, isNewTrick: boolean) — `isNewTrick: true`면 새 트릭 시작, `false`면 같은 트릭 내 차례 변경 |
+| `skulkingTurnUpdate` | 다음 차례 (currentPlayerId, isNewTrick: boolean, **trickOrder?**) — `isNewTrick: true`면 새 트릭 시작 + trickOrder 포함, `false`면 같은 트릭 내 차례 변경 |
 | `skulkingTrickResult` | 트릭 결과 (winnerId, tricks) |
 | `skulkingRoundResult` | 라운드 결과 (round, bids, tricks, roundScores, totalScores, roundScoreHistory, **roundBidTrickHistory**, isLastRound) |
 | `skulkingGameOver` | 최종 결과 (finalScores, ranking, roundScoreHistory) |
@@ -207,6 +216,11 @@ src/
 인어(해골왕 있을 때) > 해골왕 > 해적/타이그레스(해적) > 인어(해골왕 없을 때) > ♠ 검정 수트(높은 숫자) > 리드 수트(높은 숫자) > 나머지
 E 탈출은 항상 짐. 여러 명이 같은 특수카드를 내면 먼저 낸 사람이 이김 (trick[0] 폴백)
 ```
+
+**탈출카드 리드 버그 수정** (2026-02-27):
+- 탈출카드가 리드로 나왔을 때 숫자카드 무시하던 버그 수정
+- `firstNonEscapeEntry`: 트릭에서 탈출카드가 아닌 첫 번째 숫자 수트 카드 기준으로 리드 수트 결정
+- 모든 카드가 탈출카드면 `trick[0]`(첫 번째 낸 플레이어) 승리
 
 ## Skulking 리드 수트 결정 규칙
 
@@ -242,9 +256,11 @@ if (leadEntry) {
 
 - **비드 성공**: 비드 × 20점 (비드 0 성공: 라운드 수 × 10점)
 - **비드 실패**: |비드 - 실제| × -10점 (비드 0 실패: 라운드 수 × -10점)
-- **보너스** (`calculateTrickBonus`):
+- **보너스** (`calculateTrickBonus`, `pendingBonus` 패턴):
   - Skull King으로 Pirate 잡을 때 +30점/마리
   - Mermaid가 Skull King을 잡을 때 +50점
+  - **비드 성공 시에만 적용**: `resolveTrick`에서 `pendingBonus` Map에 누적 → `endRound`에서 비드 성공 플레이어에게만 합산
+  - `startMainGame`, `startNewRound`, `handleTestStart` 시 `pendingBonus = new Map()` 초기화
 
 ## Skulking 재연결 (roomJoined에 포함되는 상태)
 
