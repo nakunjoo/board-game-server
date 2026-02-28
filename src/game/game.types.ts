@@ -1,10 +1,24 @@
 import { WebSocket } from 'ws';
 
-export type CardType = 'clubs' | 'diamonds' | 'hearts' | 'spades'
-  | 'pepper' | 'cinnamon' | 'saffron'   // 향신료 3종
-  | 'wild-number' | 'wild-suit'          // 향신료 와일드카드
-  | 'sk-black' | 'sk-yellow' | 'sk-purple' | 'sk-green'  // 스컬킹 숫자 수트
-  | 'sk-escape' | 'sk-pirate' | 'sk-mermaid' | 'sk-skulking' | 'sk-tigress'; // 스컬킹 특수 카드
+export type CardType =
+  | 'clubs'
+  | 'diamonds'
+  | 'hearts'
+  | 'spades'
+  | 'pepper'
+  | 'cinnamon'
+  | 'saffron' // 향신료 3종
+  | 'wild-number'
+  | 'wild-suit' // 향신료 와일드카드
+  | 'sk-black'
+  | 'sk-yellow'
+  | 'sk-purple'
+  | 'sk-green' // 스컬킹 숫자 수트
+  | 'sk-escape'
+  | 'sk-pirate'
+  | 'sk-mermaid'
+  | 'sk-skulking'
+  | 'sk-tigress'; // 스컬킹 특수 카드
 
 export interface Card {
   type: CardType;
@@ -48,13 +62,13 @@ export interface GameState {
   tableStack?: Card[]; // 현재 쌓인 카드 더미 (실제 카드)
   // 도전 페이즈 (Spice 게임)
   challengePhase?: {
-    playerId: string;         // 카드를 낸 플레이어
-    playedCard: Card;         // 실제로 낸 카드 (뒷면)
-    declaredSuit: string;     // 선언한 향신료
-    declaredNumber: number;   // 선언한 숫자
-    nextPlayerId: string;     // 도전 없을 시 다음 턴 플레이어
+    playerId: string; // 카드를 낸 플레이어
+    playedCard: Card; // 실제로 낸 카드 (뒷면)
+    declaredSuit: string; // 선언한 향신료
+    declaredNumber: number; // 선언한 숫자
+    nextPlayerId: string; // 도전 없을 시 다음 턴 플레이어
     timer: ReturnType<typeof setTimeout>; // 5초 자동 진행 타이머
-    startedAt: number;        // 도전 페이즈 시작 시각 (ms, 재연결 시 남은 시간 계산용)
+    startedAt: number; // 도전 페이즈 시작 시각 (ms, 재연결 시 남은 시간 계산용)
     handEmptyPlayerId?: string; // 이 카드를 내면 손패가 비는 플레이어 (트로피 대상)
   } | null;
   // 트로피 (Spice 게임) - 손패를 모두 비운 플레이어에게 지급
@@ -62,9 +76,9 @@ export interface GameState {
   // 따낸 카드 (Spice 게임) - 도전/도전만료로 더미를 획득한 카드들
   wonCards?: Map<string, Card[]>; // playerId → 획득한 카드 목록
   // 선뽑기 (Skulking 게임)
-  skulkingFirstDraw?: Map<string, number>;  // playerId → 뽑은 숫자
-  skulkingFirstDrawDone?: Set<string>;       // 뽑기 완료한 playerId
-  skulkingFirstDrawPool?: number[];          // 남은 숫자 풀 (1~10 셔플)
+  skulkingFirstDraw?: Map<string, number>; // playerId → 뽑은 숫자
+  skulkingFirstDrawDone?: Set<string>; // 뽑기 완료한 playerId
+  skulkingFirstDrawPool?: number[]; // 남은 숫자 풀 (1~10 셔플)
 
   // 스컬킹 게임 전용
   skulkingRound?: number; // 현재 라운드 (1~10)
@@ -75,17 +89,27 @@ export interface GameState {
   tricks?: Map<string, number>; // playerId → 획득 트릭 수
   scores?: Map<string, number>; // playerId → 누적 점수
   roundScores?: Map<string, number[]>; // playerId → 라운드별 점수 기록
-  roundBidTrickHistory?: Array<{ round: number; bids: Record<string, number>; tricks: Record<string, number> }>; // 라운드별 비드/트릭 기록
+  roundBidTrickHistory?: Array<{
+    round: number;
+    bids: Record<string, number>;
+    tricks: Record<string, number>;
+  }>; // 라운드별 비드/트릭 기록
   skulkingLeadPlayerId?: string; // 현재 트릭 리드 플레이어
   skulkingCurrentPlayerId?: string; // 현재 카드 낼 차례 플레이어
   skulkingTrickOrder?: string[]; // 현재 트릭 내는 순서 (playerId 배열)
   skulkingTrickIndex?: number; // 현재 트릭 내는 순서 인덱스
-  currentTrick?: Array<{ playerId: string; card: Card; tigressDeclared?: 'escape' | 'pirate' }>; // 현재 트릭
+  currentTrick?: Array<{
+    playerId: string;
+    card: Card;
+    tigressDeclared?: 'escape' | 'pirate';
+  }>; // 현재 트릭
   skulkingTrickCount?: number; // 현재 라운드에서 완료된 트릭 수
   skulkingNextRoundReady?: Set<string>; // 다음 라운드 준비 완료한 playerId
   pendingBonus?: Map<string, number>; // 라운드 중 트릭 보너스 누적 (비드 성공 시에만 반영)
   skulkingBidTimer?: ReturnType<typeof setTimeout>; // 비드 자동 제출 타이머
   skulkingPlayTimer?: ReturnType<typeof setTimeout>; // 플레이 자동 제출 타이머
+  skulkingBidTimerStartedAt?: number; // 비드 타이머 시작 시각 (ms)
+  skulkingPlayTimerStartedAt?: number; // 플레이 타이머 시작 시각 (ms)
 }
 
 export interface PlayerResult {

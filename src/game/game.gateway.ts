@@ -179,7 +179,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // ── 선뽑기 상태 계산 헬퍼 ──────────────────────────────────
     const buildFirstDrawState = () => {
-      const isFirstDraw = room.state.firstDraw !== undefined && !room.gameStarted;
+      const isFirstDraw =
+        room.state.firstDraw !== undefined && !room.gameStarted;
       const myDrawnNumber = room.state.firstDraw?.get(playerId) ?? null;
       const drawnCount = room.state.firstDrawDone?.size ?? 0;
       const firstDrawFinished = isFirstDraw && drawnCount === room.clients.size;
@@ -192,13 +193,24 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
         let maxNum = -1;
         room.state.firstDraw.forEach((num, pid) => {
-          if (num > maxNum) { maxNum = num; firstPlayerId = pid; }
+          if (num > maxNum) {
+            maxNum = num;
+            firstPlayerId = pid;
+          }
         });
         firstNickname = firstPlayerId
           ? this.ctx.getNicknameByPlayerId(room, firstPlayerId)
           : null;
       }
-      return { isFirstDraw, myDrawnNumber, drawnCount, firstDrawFinished, firstDrawResults, firstPlayerId, firstNickname };
+      return {
+        isFirstDraw,
+        myDrawnNumber,
+        drawnCount,
+        firstDrawFinished,
+        firstDrawResults,
+        firstPlayerId,
+        firstNickname,
+      };
     };
 
     // ── Skulking 재연결 공통 필드 ─────────────────────────────
@@ -211,13 +223,17 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const buildSpiceState = () => {
       const wonCardsMap = room.state.wonCards ?? new Map<string, unknown[]>();
       const wonCardCounts: Record<string, number> = {};
-      for (const [pid, cards] of wonCardsMap.entries()) wonCardCounts[pid] = (cards as unknown[]).length;
+      for (const [pid, cards] of wonCardsMap.entries())
+        wonCardCounts[pid] = (cards as unknown[]).length;
       const challengePhase = room.state.challengePhase
         ? {
             playerId: room.state.challengePhase.playerId,
             nickname:
               room.nicknames.get(
-                this.ctx.findClientByPlayerId(room, room.state.challengePhase.playerId) as WebSocket,
+                this.ctx.findClientByPlayerId(
+                  room,
+                  room.state.challengePhase.playerId,
+                ) as WebSocket,
               ) ?? '',
             declaredSuit: room.state.challengePhase.declaredSuit,
             declaredNumber: room.state.challengePhase.declaredNumber,
@@ -228,18 +244,32 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const CHALLENGE_TIME_MS = 5000;
       const turnTimeLeft =
         room.state.turnStartedAt != null && !room.state.challengePhase
-          ? Math.max(0, Math.round((TURN_TIME_MS - (now - room.state.turnStartedAt)) / 1000))
+          ? Math.max(
+              0,
+              Math.round(
+                (TURN_TIME_MS - (now - room.state.turnStartedAt)) / 1000,
+              ),
+            )
           : null;
       const challengeTimeLeft =
         room.state.challengePhase?.startedAt != null
-          ? Math.max(0, Math.round((CHALLENGE_TIME_MS - (now - room.state.challengePhase.startedAt)) / 1000))
+          ? Math.max(
+              0,
+              Math.round(
+                (CHALLENGE_TIME_MS -
+                  (now - room.state.challengePhase.startedAt)) /
+                  1000,
+              ),
+            )
           : null;
       return {
         currentTurnPlayerId: room.state.currentTurnPlayerId ?? null,
         currentSuit: room.state.currentSuit ?? null,
         currentNumber: room.state.currentNumber ?? 0,
         tableStackSize: room.state.tableStack?.length ?? 0,
-        trophies: room.state.trophies ? Object.fromEntries(room.state.trophies) : {},
+        trophies: room.state.trophies
+          ? Object.fromEntries(room.state.trophies)
+          : {},
         wonCardCounts,
         challengePhase,
         turnTimeLeft,
@@ -295,7 +325,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.ctx.broadcastToRoom(
         name,
         'userJoined',
-        { roomName: name, memberCount: room.clients.size, playerId, nickname, order, players },
+        {
+          roomName: name,
+          memberCount: room.clients.size,
+          playerId,
+          nickname,
+          order,
+          players,
+        },
         client,
       );
       return;
@@ -310,10 +347,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (existingClient !== client) {
         // 다른 소켓 → 교체 (빠른 새로고침: 구 소켓이 아직 살아있는 경우)
         this.ctx.replaceClient(room, existingClient, client);
-        console.log(`'${nickname}' (${playerId}) replaced existing client in room '${name}'`);
+        console.log(
+          `'${nickname}' (${playerId}) replaced existing client in room '${name}'`,
+        );
       } else {
         // 같은 소켓 → room 상태 변경 없이 재전송만
-        console.log(`'${nickname}' (${playerId}) re-sent joinRoom on same socket in '${name}'`);
+        console.log(
+          `'${nickname}' (${playerId}) re-sent joinRoom on same socket in '${name}'`,
+        );
       }
       this.ctx.clientRooms.get(client)?.add(name);
 
@@ -406,7 +447,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.ctx.broadcastToRoom(
       name,
       'userJoined',
-      { roomName: name, memberCount: room.clients.size, playerId, nickname, order, players },
+      {
+        roomName: name,
+        memberCount: room.clients.size,
+        playerId,
+        nickname,
+        order,
+        players,
+      },
       client,
     );
   }
@@ -723,7 +771,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('skulkingTestStart')
   handleSkulkingTestStart(
-    @MessageBody() data: { roomName: string; round: number; hands: Record<string, import('./game.types').Card[]> },
+    @MessageBody()
+    data: {
+      roomName: string;
+      round: number;
+      hands: Record<string, import('./game.types').Card[]>;
+    },
     @ConnectedSocket() client: WebSocket,
   ): void {
     this.skulkingHandler.handleTestStart(data, client);

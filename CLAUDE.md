@@ -6,6 +6,12 @@ NestJS 기반 실시간 멀티플레이어 카드 게임 서버
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-02-28 | `skulking.handler.ts`: 선뽑기 선 플레이어가 매 라운드 고정되던 버그 수정 — `resolveTrick`에서 라운드 마지막 트릭 시 `endRound` 호출 전 `skulkingLeadPlayerId = winnerId` 저장 누락 수정 |
+| 2026-02-28 | `skulking.handler.ts` / `buildSkulkingState`: 재연결 시 `skulkingTrickOrder` 포함 — 새로고침 후 턴 순서 복원 |
+| 2026-02-28 | `skulking.handler.ts` / `buildSkulkingState`: 재연결 시 `skulkingTimerTimeLeft` 포함 — 비드/플레이 타이머 남은 시간(서버 `Date.now()` 기반 계산) 전달 |
+| 2026-02-28 | `skulking.handler.ts`: `startBidTimer`에서 `skulkingBidTimerStartedAt = Date.now()` 저장, `startPlayTimer`에서 `skulkingPlayTimerStartedAt = Date.now()` 저장 |
+| 2026-02-28 | `skulking.handler.ts`: `skulkingCardPlayed` 이벤트에 `nickname`, `card`, `tigressDeclared` 필드 이미 포함 (채팅 로그 용도로 클라이언트에서 활용) |
+| 2026-02-28 | `game.types.ts`: `GameState`에 `skulkingBidTimerStartedAt?: number`, `skulkingPlayTimerStartedAt?: number` 필드 추가 |
 | 2026-02-27 | `skulking.handler.ts`: 트릭 승자 판정 버그 수정 — 탈출카드만 있던 경우 `firstNonEscapeEntry`로 처음 나온 숫자 수트 카드 기준으로 승자 판정 (탈출카드 2장 + 숫자카드 상황 오판정 해결) |
 | 2026-02-27 | `skulking.handler.ts`: `handleTestStart` 추가 — DEV 전용, 방장만 사용 가능, 라운드+손패 지정 후 비드 단계 시작, `pendingBonus` 초기화 포함 |
 | 2026-02-27 | `game.gateway.ts`: `skulkingTestStart` 이벤트 핸들러 추가 |
@@ -132,6 +138,8 @@ src/
   skulkingNextRoundReady?: Set<string>      // 다음 라운드 준비 완료한 playerId
   skulkingBidTimer?: ReturnType<typeof setTimeout>   // 비드 단계 자동 제출 타이머
   skulkingPlayTimer?: ReturnType<typeof setTimeout>  // 플레이 단계 자동 제출 타이머
+  skulkingBidTimerStartedAt?: number                 // 비드 타이머 시작 시각 (ms) — 재연결 시 남은 시간 계산용
+  skulkingPlayTimerStartedAt?: number                // 플레이 타이머 시작 시각 (ms) — 재연결 시 남은 시간 계산용
   roundBidTrickHistory?: Array<{                    // 완료된 라운드별 bid/trick 기록 (통계 모달 + 재연결 복원용)
     round: number;
     bids: Record<string, number>;
@@ -189,10 +197,10 @@ src/
 | `skulkingBidPhase` | 비드 단계 시작 (round, bids) — 동시 선언 방식, 20초 타이머 시작 |
 | `skulkingBidUpdate` | 비드 제출 현황 (bids) |
 | `skulkingPlayPhase` | 플레이 단계 시작 (leadPlayerId, bids, **trickOrder**) |
-| `skulkingCardPlayed` | 카드 냄 (currentTrick, playerHands) |
+| `skulkingCardPlayed` | 카드 냄 (playerId, nickname, card, tigressDeclared, currentTrick, playerHands) |
 | `myHandUpdate` | 내 손패 업데이트 (myHand) — 카드 낸 플레이어에게 개인 전송 |
 | `skulkingTurnUpdate` | 다음 차례 (currentPlayerId, isNewTrick: boolean, **trickOrder?**) — `isNewTrick: true`면 새 트릭 시작 + trickOrder 포함, `false`면 같은 트릭 내 차례 변경 |
-| `skulkingTrickResult` | 트릭 결과 (winnerId, tricks) |
+| `skulkingTrickResult` | 트릭 결과 (winnerId, winnerNickname, trick[], tricks, bonus, trickCount, totalTricks) |
 | `skulkingRoundResult` | 라운드 결과 (round, bids, tricks, roundScores, totalScores, roundScoreHistory, **roundBidTrickHistory**, isLastRound) |
 | `skulkingGameOver` | 최종 결과 (finalScores, ranking, roundScoreHistory) |
 
@@ -267,7 +275,9 @@ if (leadEntry) {
 `buildSkulkingState()` 헬퍼로 계산:
 - `gameStarted`, `myHand`, `playerHands`, `skulkingRound`, `skulkingPhase`
 - `skulkingCurrentBidPlayerId`, `bids`, `tricks`, `scores`, `roundScores`
-- `skulkingCurrentPlayerId`, `currentTrick`
+- `skulkingCurrentPlayerId`, `skulkingLeadPlayerId`, `currentTrick`
+- `skulkingTrickOrder` — 재연결 후 턴 순서(플레이어 order) 복원용
+- `skulkingTimerTimeLeft` — 현재 단계(bid/play) 타이머 남은 초 (`Date.now()` 기반 계산)
 - `roundBidTrickHistory` (완료된 라운드별 bid/trick 누적 기록 — 통계 모달 새로고침 복원용)
 - 선뽑기 중이면: `skulkingIsFirstDraw`, `skulkingDrawnCount`, `skulkingTotalCount`
 

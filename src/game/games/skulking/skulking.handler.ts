@@ -400,6 +400,8 @@ export class SkulkingHandler {
 
     this.clearBidTimer(room);
 
+    room.state.skulkingBidTimerStartedAt = Date.now();
+    room.state.skulkingPlayTimerStartedAt = undefined;
     room.state.skulkingBidTimer = setTimeout(() => {
       const r = this.ctx.rooms.get(roomName);
       if (!r || r.state.skulkingPhase !== 'bid') return;
@@ -469,6 +471,9 @@ export class SkulkingHandler {
 
   private startPlayTimer(room: ReturnType<typeof this.ctx.rooms.get> & object): void {
     this.clearPlayTimer(room);
+
+    room.state.skulkingPlayTimerStartedAt = Date.now();
+    room.state.skulkingBidTimerStartedAt = undefined;
 
     // roomName을 room에서 찾기
     let roomName = '';
@@ -561,7 +566,8 @@ export class SkulkingHandler {
     });
 
     if (room.state.skulkingTrickCount >= round) {
-      // 라운드 종료
+      // 라운드 종료 - 마지막 트릭 승자를 다음 라운드 선으로 저장
+      room.state.skulkingLeadPlayerId = winnerId;
       this.endRound(roomName);
     } else {
       // 다음 트릭: 이긴 플레이어가 리드
@@ -913,6 +919,18 @@ export class SkulkingHandler {
 
     if (!room.state.skulkingRound) return {};
 
+    const BID_TIME_LIMIT = 20;
+    const PLAY_TIME_LIMIT = 20;
+
+    let timerTimeLeft: number | null = null;
+    if (room.state.skulkingPhase === 'bid' && room.state.skulkingBidTimerStartedAt) {
+      const elapsed = Math.floor((Date.now() - room.state.skulkingBidTimerStartedAt) / 1000);
+      timerTimeLeft = Math.max(0, BID_TIME_LIMIT - elapsed);
+    } else if (room.state.skulkingPhase === 'play' && room.state.skulkingPlayTimerStartedAt) {
+      const elapsed = Math.floor((Date.now() - room.state.skulkingPlayTimerStartedAt) / 1000);
+      timerTimeLeft = Math.max(0, PLAY_TIME_LIMIT - elapsed);
+    }
+
     return {
       skulkingRound: room.state.skulkingRound,
       skulkingPhase: room.state.skulkingPhase,
@@ -923,6 +941,8 @@ export class SkulkingHandler {
       roundScores: room.state.roundScores ? Object.fromEntries(room.state.roundScores) : {},
       skulkingCurrentPlayerId: room.state.skulkingCurrentPlayerId ?? null,
       skulkingLeadPlayerId: room.state.skulkingLeadPlayerId ?? null,
+      skulkingTrickOrder: room.state.skulkingTrickOrder ?? [],
+      skulkingTimerTimeLeft: timerTimeLeft,
       currentTrick: (room.state.currentTrick ?? []).map((e) => ({
         playerId: e.playerId,
         card: e.card,

@@ -18,7 +18,12 @@ export class SkulkingEngine implements GameEngine {
   readonly gameType = 'skulking';
 
   createDeck(): Card[] {
-    const suits: CardType[] = ['sk-black', 'sk-yellow', 'sk-purple', 'sk-green'];
+    const suits: CardType[] = [
+      'sk-black',
+      'sk-yellow',
+      'sk-purple',
+      'sk-green',
+    ];
     const suitNames: Record<string, string> = {
       'sk-black': 'Jolly Roger',
       'sk-yellow': 'Treasure Chest',
