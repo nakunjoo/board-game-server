@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { GameContext } from '../../game.context';
 import { GameEngineFactory } from '../../game-engine.factory';
+import { DatabaseService } from '../../../database/database.service';
 
 /**
  * '향신료' 게임 전용 이벤트 핸들러
@@ -12,6 +13,7 @@ export class SpiceHandler {
   constructor(
     private readonly ctx: GameContext,
     private readonly engineFactory: GameEngineFactory,
+    private readonly supabase: DatabaseService,
   ) {}
 
   // ── startGame ─────────────────────────────────────────────
@@ -165,6 +167,21 @@ export class SpiceHandler {
     room.state.tableStack = [];
     room.state.trophies = new Map();
     room.state.wonCards = new Map();
+
+    // DB: 세션 생성 + 플레이어 초기 삽입 (fire-and-forget)
+    const now = new Date();
+    room.sessionStartedAt = now.getTime();
+    const players = this.ctx.getPlayersWithOrder(room);
+    this.supabase.createSession(
+      { roomName, gameType: 'spice', playerCount: room.clients.size },
+      now,
+    ).then((sessionId) => {
+      if (!sessionId) return;
+      room.supabaseSessionId = sessionId;
+      this.supabase.insertPlayerResults(
+        players.map((p) => ({ sessionId, playerId: p.playerId, nickname: p.nickname })),
+      );
+    });
 
     // 선 플레이어부터 playerOrder 재정렬
     const firstClient = this.ctx.findClientByPlayerId(room, firstPlayerId);
@@ -992,6 +1009,32 @@ export class SpiceHandler {
       winnerNicknames: winners.map((w) => w.nickname),
       maxScore,
     });
+
+    // DB: 결과 저장 (fire-and-forget)
+    if (room.supabaseSessionId) {
+      const sessionId = room.supabaseSessionId;
+      const durationSec = room.sessionStartedAt
+        ? Math.floor((Date.now() - room.sessionStartedAt) / 1000)
+        : undefined;
+      this.supabase.updateSessionDuration(sessionId, durationSec ?? 0);
+
+      const winnerIds = new Set(winners.map((w) => w.playerId));
+      playerResults.forEach((r, idx) => {
+        this.supabase.finalizePlayerResult({
+          sessionId,
+          playerId: r.playerId,
+          isWinner: winnerIds.has(r.playerId),
+          score: r.score,
+          rank: idx + 1,
+          extra: {
+            trophyCount: r.trophyCount,
+            wonCardCount: r.wonCardCount,
+            remainingHand: r.hand.length,
+            reason,
+          },
+        });
+      });
+    }
   }
 
   private finishGame(roomName: string): void {

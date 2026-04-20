@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { GameContext } from '../../game.context';
 import { GameEngineFactory } from '../../game-engine.factory';
+import { DatabaseService } from '../../../database/database.service';
 
 /**
  * '더 갱' 게임 전용 이벤트 핸들러
@@ -12,6 +13,7 @@ export class GangHandler {
   constructor(
     private readonly ctx: GameContext,
     private readonly engineFactory: GameEngineFactory,
+    private readonly supabase: DatabaseService,
   ) {}
 
   // ── startGame ─────────────────────────────────────────────
@@ -79,6 +81,21 @@ export class GangHandler {
     console.log(
       `Game started in room '${roomName}' with ${room.clients.size} players`,
     );
+
+    // DB: 세션 생성 + 플레이어 초기 삽입 (fire-and-forget)
+    const now = new Date();
+    room.sessionStartedAt = now.getTime();
+    const players = this.ctx.getPlayersWithOrder(room);
+    this.supabase.createSession(
+      { roomName, gameType: 'gang', playerCount: room.clients.size },
+      now,
+    ).then((sessionId) => {
+      if (!sessionId) return;
+      room.supabaseSessionId = sessionId;
+      this.supabase.insertPlayerResults(
+        players.map((p) => ({ sessionId, playerId: p.playerId, nickname: p.nickname })),
+      );
+    });
 
     room.clients.forEach((playerClient) => {
       this.ctx.sendToClient(playerClient, 'gameStarted', {
@@ -743,6 +760,32 @@ export class GangHandler {
       gameOver,
       gameOverResult,
     });
+
+    // DB: gameOver 시에만 최종 결과 저장 (fire-and-forget)
+    if (gameOver && room.supabaseSessionId) {
+      const sessionId = room.supabaseSessionId;
+      const durationSec = room.sessionStartedAt
+        ? Math.floor((Date.now() - room.sessionStartedAt) / 1000)
+        : undefined;
+      const sampleRecord = room.state.winLossRecord.get(playerResults[0]?.playerId) ?? [];
+      const totalRounds = sampleRecord.length;
+
+      this.supabase.updateSessionDuration(sessionId, durationSec ?? 0, totalRounds);
+
+      playerResults.forEach((r, idx) => {
+        this.supabase.finalizePlayerResult({
+          sessionId,
+          playerId: r.playerId,
+          isWinner: gameOverResult === 'victory',
+          rank: idx + 1,
+          extra: {
+            chips: r.chips,
+            gameOverResult,
+            winLossRecord: room.state.winLossRecord.get(r.playerId) ?? [],
+          },
+        });
+      });
+    }
   }
 
   private checkWinCondition(

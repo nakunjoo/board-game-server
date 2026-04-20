@@ -3,6 +3,7 @@ import { WebSocket } from 'ws';
 import { GameContext } from '../../game.context';
 import { GameEngineFactory } from '../../game-engine.factory';
 import { Card } from '../../game.types';
+import { DatabaseService } from '../../../database/database.service';
 
 const TOTAL_ROUNDS = 10;
 const SPECIAL_TYPES = ['sk-escape', 'sk-pirate', 'sk-mermaid', 'sk-skulking', 'sk-tigress'];
@@ -12,6 +13,7 @@ export class SkulkingHandler {
   constructor(
     private readonly ctx: GameContext,
     private readonly engineFactory: GameEngineFactory,
+    private readonly supabase: DatabaseService,
   ) {}
 
   // ── 게임 시작 ──────────────────────────────────────────────
@@ -148,6 +150,21 @@ export class SkulkingHandler {
     room.state.skulkingTrickCount = 0;
     room.state.skulkingNextRoundReady = new Set();
     room.state.pendingBonus = new Map();
+
+    // DB: 세션 생성 + 플레이어 초기 삽입 (fire-and-forget)
+    const now = new Date();
+    room.sessionStartedAt = now.getTime();
+    const players = this.ctx.getPlayersWithOrder(room);
+    this.supabase.createSession(
+      { roomName, gameType: 'skulking', playerCount: room.clients.size, totalRounds: TOTAL_ROUNDS },
+      now,
+    ).then((sessionId) => {
+      if (!sessionId) return;
+      room.supabaseSessionId = sessionId;
+      this.supabase.insertPlayerResults(
+        players.map((p) => ({ sessionId, playerId: p.playerId, nickname: p.nickname })),
+      );
+    });
 
     const playerIds = this.getPlayerIds(room);
 
@@ -702,6 +719,30 @@ export class SkulkingHandler {
       ranking,
       roundScoreHistory: Object.fromEntries(room.state.roundScores!),
     });
+
+    // DB: 결과 저장 (fire-and-forget)
+    if (room.supabaseSessionId) {
+      const sessionId = room.supabaseSessionId;
+      const durationSec = room.sessionStartedAt
+        ? Math.floor((Date.now() - room.sessionStartedAt) / 1000)
+        : undefined;
+      this.supabase.updateSessionDuration(sessionId, durationSec ?? 0, TOTAL_ROUNDS);
+
+      ranking.forEach((r) => {
+        this.supabase.finalizePlayerResult({
+          sessionId,
+          playerId: r.playerId,
+          isWinner: r.rank === 1,
+          score: r.score,
+          rank: r.rank,
+          extra: {
+            roundScores: room.state.roundScores
+              ? Array.from(room.state.roundScores.get(r.playerId) ?? [])
+              : [],
+          },
+        });
+      });
+    }
   }
 
   // ── 테스트 모드 (dev 전용) ────────────────────────────────

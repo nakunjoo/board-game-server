@@ -13,6 +13,7 @@ import { GameContext } from './game.context';
 import { GangHandler } from './games/gang/gang.handler';
 import { SpiceHandler } from './games/spice/spice.handler';
 import { SkulkingHandler } from './games/skulking/skulking.handler';
+import { DatabaseService } from '../database/database.service';
 
 @WebSocketGateway({ path: '/ws' })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -25,6 +26,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly gangHandler: GangHandler,
     private readonly spiceHandler: SpiceHandler,
     private readonly skulkingHandler: SkulkingHandler,
+    private readonly supabase: DatabaseService,
   ) {}
 
   // ── 연결 관리 ─────────────────────────────────────────────
@@ -47,6 +49,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         const timer = setTimeout(() => {
           room.disconnectTimers.delete(playerId);
+          // DB: 게임 중 이탈 처리
+          if (room.gameStarted && room.supabaseSessionId) {
+            this.supabase.markAbandoned(room.supabaseSessionId, playerId);
+          }
           this.ctx.leaveRoom(client, roomName);
           console.log(
             `'${playerId}' grace period expired, removed from '${roomName}'`,

@@ -8,10 +8,12 @@ import { SkulkingHandler } from './games/skulking/skulking.handler';
 import { StandardCardEngine } from './engines/standard-card.engine';
 import { SpiceEngine } from './engines/spice.engine';
 import { SkulkingEngine } from './engines/skulking.engine';
+import { DatabaseModule } from '../database/database.module';
 
 const ENGINES = [StandardCardEngine, SpiceEngine, SkulkingEngine];
 
 @Module({
+  imports: [DatabaseModule],
   providers: [
     ...ENGINES,
     {
