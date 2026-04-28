@@ -27,4 +27,7 @@ export class Profile {
 
   @Column({ name: 'ban_reason', type: 'text', nullable: true })
   banReason: string | null;
+
+  @Column({ name: 'nickname_updated_at', type: 'timestamptz', nullable: true })
+  nicknameUpdatedAt: Date | null;
 }

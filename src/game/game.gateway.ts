@@ -835,6 +835,17 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
+  @SubscribeMessage('voiceSpeaking')
+  handleVoiceSpeaking(
+    @MessageBody() data: { roomName: string; playerId: string; isSpeaking: boolean },
+  ): void {
+    this.ctx.broadcastToRoom(data.roomName, 'voiceSpeaking', {
+      roomName: data.roomName,
+      playerId: data.playerId,
+      isSpeaking: data.isSpeaking,
+    });
+  }
+
   @SubscribeMessage('voiceSignal')
   handleVoiceSignal(
     @MessageBody()

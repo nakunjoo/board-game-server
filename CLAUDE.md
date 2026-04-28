@@ -2,6 +2,10 @@
 
 NestJS 기반 실시간 멀티플레이어 카드 게임 서버
 
+## Supabase
+
+DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCHEMA.md) 참조
+
 ## 변경 이력
 
 | 날짜 | 내용 |
