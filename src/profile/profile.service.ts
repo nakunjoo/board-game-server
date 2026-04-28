@@ -1,6 +1,5 @@
 import {
   Injectable,
-  NotFoundException,
   ConflictException,
   BadRequestException,
 } from '@nestjs/common';
@@ -10,6 +9,16 @@ import { Profile } from '../database/entities/profile.entity';
 
 const COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 
+const PREFIXES = ['붉은', '푸른', '검은', '흰', '금빛'];
+const NOUNS = ['여우', '곰', '토끼', '늑대', '사자', '펭귄', '판다', '매'];
+
+function generateRandomNickname(): string {
+  const prefix = PREFIXES[Math.floor(Math.random() * PREFIXES.length)];
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  const num = Math.floor(Math.random() * 90) + 10;
+  return `${prefix}${noun}${num}`;
+}
+
 @Injectable()
 export class ProfileService {
   constructor(
@@ -18,8 +27,22 @@ export class ProfileService {
   ) {}
 
   async getProfile(userId: string): Promise<{ nickname: string; nicknameUpdatedAt: string | null }> {
-    const profile = await this.profileRepo.findOne({ where: { id: userId } });
-    if (!profile) throw new NotFoundException('프로필을 찾을 수 없습니다');
+    let profile = await this.profileRepo.findOne({ where: { id: userId } });
+
+    if (!profile) {
+      // 프로필 없으면 랜덤 닉네임으로 자동 생성
+      let nickname = generateRandomNickname();
+
+      // 닉네임 중복 시 재생성 (최대 5회)
+      for (let i = 0; i < 5; i++) {
+        const exists = await this.profileRepo.findOne({ where: { nickname } });
+        if (!exists) break;
+        nickname = generateRandomNickname();
+      }
+
+      profile = this.profileRepo.create({ id: userId, nickname });
+      await this.profileRepo.save(profile);
+    }
 
     return {
       nickname: profile.nickname,
@@ -28,8 +51,13 @@ export class ProfileService {
   }
 
   async updateNickname(userId: string, newNickname: string): Promise<{ nickname: string; nicknameUpdatedAt: string }> {
-    const profile = await this.profileRepo.findOne({ where: { id: userId } });
-    if (!profile) throw new NotFoundException('프로필을 찾을 수 없습니다');
+    let profile = await this.profileRepo.findOne({ where: { id: userId } });
+
+    if (!profile) {
+      profile = this.profileRepo.create({ id: userId, nickname: newNickname });
+      await this.profileRepo.save(profile);
+      return { nickname: newNickname, nicknameUpdatedAt: new Date().toISOString() };
+    }
 
     // 쿨다운 체크
     if (profile.nicknameUpdatedAt) {
