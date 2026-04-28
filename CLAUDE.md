@@ -6,6 +6,8 @@ NestJS 기반 실시간 멀티플레이어 카드 게임 서버
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-04-28 | `game.types.ts`: `Room` 인터페이스에 `voiceParticipants?: Map<string, { playerId: string; nickname: string }>` 필드 추가 |
+| 2026-04-28 | `game.gateway.ts`: 음성 통화 WebRTC 시그널링 핸들러 3개 추가 — `voiceJoin`(방 참여자 목록 반환 + 브로드캐스트), `voiceLeave`(참여자 제거 + 브로드캐스트), `voiceSignal`(offer/answer/ICE 특정 플레이어에게 중계). 시그널은 방 단위로 격리됨 |
 | 2026-02-28 | `skulking.handler.ts`: 선뽑기 선 플레이어가 매 라운드 고정되던 버그 수정 — `resolveTrick`에서 라운드 마지막 트릭 시 `endRound` 호출 전 `skulkingLeadPlayerId = winnerId` 저장 누락 수정 |
 | 2026-02-28 | `skulking.handler.ts` / `buildSkulkingState`: 재연결 시 `skulkingTrickOrder` 포함 — 새로고침 후 턴 순서 복원 |
 | 2026-02-28 | `skulking.handler.ts` / `buildSkulkingState`: 재연결 시 `skulkingTimerTimeLeft` 포함 — 비드/플레이 타이머 남은 시간(서버 `Date.now()` 기반 계산) 전달 |

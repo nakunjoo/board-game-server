@@ -138,4 +138,5 @@ export interface Room {
   successCount?: number; // 성공 횟수 (손패 수 결정용: 2회 이상이면 3장)
   supabaseSessionId?: string; // Supabase game_sessions.id
   sessionStartedAt?: number; // 게임 시작 시각 (ms, duration 계산용)
+  voiceParticipants?: Map<string, { playerId: string; nickname: string }>; // 음성 통화 참여자
 }
