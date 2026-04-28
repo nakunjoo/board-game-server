@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Patch,
   Body,
   Req,
@@ -19,6 +20,29 @@ export class ProfileController {
   @Get()
   getProfile(@Req() req: Request) {
     return this.profileService.getProfile(req['userId']);
+  }
+
+  @Get('history')
+  getHistory(@Req() req: Request) {
+    return this.profileService.getHistory(req['userId']);
+  }
+
+  @Post('history/single')
+  @HttpCode(200)
+  recordSingleGame(
+    @Req() req: Request,
+    @Body() body: { gameType: 'minesweeper' | 'slide-puzzle'; isWinner: boolean; durationSec: number; extra?: Record<string, unknown> },
+  ) {
+    if (!body.gameType || body.isWinner === undefined || body.durationSec === undefined) {
+      return { error: '필수 파라미터가 없습니다' };
+    }
+    return this.profileService.recordSingleGame(
+      req['userId'],
+      body.gameType,
+      body.isWinner,
+      body.durationSec,
+      body.extra,
+    );
   }
 
   @Patch('nickname')

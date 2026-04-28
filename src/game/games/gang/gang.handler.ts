@@ -93,8 +93,21 @@ export class GangHandler {
       if (!sessionId) return;
       room.supabaseSessionId = sessionId;
       this.supabase.insertPlayerResults(
-        players.map((p) => ({ sessionId, playerId: p.playerId, nickname: p.nickname })),
+        players.map((p) => ({
+          sessionId,
+          playerId: p.playerId,
+          userId: p.playerId,
+          nickname: p.nickname,
+        })),
       );
+      // sessionId 확정 전 이탈한 플레이어 처리
+      if (room.pendingAbandonedPlayerIds?.length) {
+        room.pendingAbandonedPlayerIds.forEach((entry) => {
+          const [reason, pid] = entry.includes(':') ? entry.split(':') : ['disconnected', entry];
+          this.supabase.markAbandoned(sessionId, pid, reason as 'voluntary' | 'disconnected');
+        });
+        room.pendingAbandonedPlayerIds = [];
+      }
     });
 
     room.clients.forEach((playerClient) => {

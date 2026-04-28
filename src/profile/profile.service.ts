@@ -6,6 +6,8 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Profile } from '../database/entities/profile.entity';
+import { GamePlayerResult } from '../database/entities/game-player-result.entity';
+import { DatabaseService } from '../database/database.service';
 
 const COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -24,6 +26,9 @@ export class ProfileService {
   constructor(
     @InjectRepository(Profile)
     private readonly profileRepo: Repository<Profile>,
+    @InjectRepository(GamePlayerResult)
+    private readonly playerResultRepo: Repository<GamePlayerResult>,
+    private readonly db: DatabaseService,
   ) {}
 
   async getProfile(userId: string): Promise<{ nickname: string; nicknameUpdatedAt: string | null }> {
@@ -83,5 +88,37 @@ export class ProfileService {
     });
 
     return { nickname: newNickname, nicknameUpdatedAt: now.toISOString() };
+  }
+
+  async recordSingleGame(
+    userId: string,
+    gameType: 'minesweeper' | 'slide-puzzle',
+    isWinner: boolean,
+    durationSec: number,
+    extra?: Record<string, unknown>,
+  ) {
+    await this.db.recordSingleGame({ userId, gameType, isWinner, durationSec, extra });
+  }
+
+  async getHistory(userId: string) {
+    const results = await this.playerResultRepo.find({
+      where: { userId },
+      relations: ['session'],
+      order: { session: { playedAt: 'DESC' } },
+      take: 50,
+    });
+
+    return results.map((r) => ({
+      sessionId: r.sessionId,
+      gameType: r.session.gameType,
+      playedAt: r.session.playedAt,
+      playerCount: r.session.playerCount,
+      totalRounds: r.session.totalRounds,
+      durationSec: r.session.durationSec,
+      status: r.status,
+      isWinner: r.isWinner,
+      score: r.score,
+      rank: r.rank,
+    }));
   }
 }

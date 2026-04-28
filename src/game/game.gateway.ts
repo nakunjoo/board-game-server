@@ -8,12 +8,26 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, WebSocket } from 'ws';
+import { IncomingMessage } from 'http';
+import { createClient } from '@supabase/supabase-js';
 import { GameEngineFactory } from './game-engine.factory';
 import { GameContext } from './game.context';
 import { GangHandler } from './games/gang/gang.handler';
 import { SpiceHandler } from './games/spice/spice.handler';
 import { SkulkingHandler } from './games/skulking/skulking.handler';
 import { DatabaseService } from '../database/database.service';
+
+interface TokenCacheEntry {
+  userId: string;
+  expiresAt: number;
+}
+const TOKEN_CACHE = new Map<string, TokenCacheEntry>();
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, entry] of TOKEN_CACHE) {
+    if (entry.expiresAt <= now) TOKEN_CACHE.delete(token);
+  }
+}, 10 * 60 * 1000);
 
 @WebSocketGateway({ path: '/ws' })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -29,12 +43,46 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly supabase: DatabaseService,
   ) {}
 
+  // ── 토큰 검증 ─────────────────────────────────────────────
+
+  private async validateToken(token: string): Promise<string | null> {
+    const cached = TOKEN_CACHE.get(token);
+    if (cached && cached.expiresAt > Date.now()) return cached.userId;
+
+    const supabaseAdmin = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+    if (error || !user) return null;
+
+    TOKEN_CACHE.set(token, { userId: user.id, expiresAt: Date.now() + 60 * 1000 });
+    return user.id;
+  }
+
   // ── 연결 관리 ─────────────────────────────────────────────
 
-  handleConnection(client: WebSocket) {
+  async handleConnection(client: WebSocket, req: IncomingMessage) {
+    const url = new URL(req.url!, 'ws://localhost');
+    const token = url.searchParams.get('token');
+
+    if (!token) {
+      this.ctx.sendToClient(client, 'error', { message: '인증이 필요합니다' });
+      client.close();
+      return;
+    }
+
+    const userId = await this.validateToken(token);
+    if (!userId) {
+      this.ctx.sendToClient(client, 'error', { message: '인증에 실패했습니다' });
+      client.close();
+      return;
+    }
+
+    this.ctx.clientAuth.set(client, userId);
     this.ctx.clients.add(client);
     this.ctx.clientRooms.set(client, new Set());
-    console.log(`Client connected. Total clients: ${this.ctx.clients.size}`);
+    console.log(`Client connected (${userId}). Total clients: ${this.ctx.clients.size}`);
   }
 
   handleDisconnect(client: WebSocket) {
@@ -50,8 +98,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const timer = setTimeout(() => {
           room.disconnectTimers.delete(playerId);
           // DB: 게임 중 이탈 처리
-          if (room.gameStarted && room.supabaseSessionId) {
-            this.supabase.markAbandoned(room.supabaseSessionId, playerId);
+          if (room.gameStarted) {
+            if (room.supabaseSessionId) {
+              this.supabase.markAbandoned(room.supabaseSessionId, playerId, 'disconnected');
+            } else {
+              room.pendingAbandonedPlayerIds ??= [];
+              room.pendingAbandonedPlayerIds.push(`disconnected:${playerId}`);
+            }
           }
           this.ctx.leaveRoom(client, roomName);
           console.log(
@@ -66,6 +119,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     }
     this.ctx.clientRooms.delete(client);
+    this.ctx.clientAuth.delete(client);
     this.ctx.clients.delete(client);
     console.log(`Client disconnected. Total clients: ${this.ctx.clients.size}`);
   }
@@ -77,14 +131,19 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody()
     data: {
       name: string;
-      playerId: string;
       nickname: string;
       gameType?: string;
       password?: string;
     },
     @ConnectedSocket() client: WebSocket,
   ): void {
-    const { name, playerId, nickname, gameType = 'gang', password } = data;
+    const { name, nickname, gameType = 'gang', password } = data;
+    const playerId = this.ctx.clientAuth.get(client);
+
+    if (!playerId) {
+      this.ctx.sendToClient(client, 'error', { message: '인증이 필요합니다' });
+      return;
+    }
 
     if (this.ctx.rooms.has(name)) {
       this.ctx.sendToClient(client, 'error', {
@@ -160,13 +219,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody()
     data: {
       name: string;
-      playerId: string;
       nickname: string;
       password?: string;
     },
     @ConnectedSocket() client: WebSocket,
   ): void {
-    const { name, playerId, nickname, password } = data;
+    const { name, nickname, password } = data;
+    const playerId = this.ctx.clientAuth.get(client);
+
+    if (!playerId) {
+      this.ctx.sendToClient(client, 'error', { message: '인증이 필요합니다' });
+      return;
+    }
     const room = this.ctx.rooms.get(name);
 
     if (!room) {
@@ -489,6 +553,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { name: string },
     @ConnectedSocket() client: WebSocket,
   ): void {
+    const room = this.ctx.rooms.get(data.name);
+    if (room?.gameStarted) {
+      const playerId = room.playerIds.get(client);
+      if (playerId) {
+        if (room.supabaseSessionId) {
+          this.supabase.markAbandoned(room.supabaseSessionId, playerId, 'voluntary');
+        } else {
+          room.pendingAbandonedPlayerIds ??= [];
+          room.pendingAbandonedPlayerIds.push(`voluntary:${playerId}`);
+        }
+      }
+    }
     this.ctx.leaveRoom(client, data.name);
     this.ctx.sendToClient(client, 'roomLeft', {
       name: data.name,

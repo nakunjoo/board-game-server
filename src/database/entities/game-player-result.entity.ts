@@ -40,7 +40,7 @@ export class GamePlayerResult {
   rank: number | null;
 
   @Column({ type: 'text', default: 'completed' })
-  status: 'completed' | 'abandoned';
+  status: 'completed' | 'abandoned_voluntary' | 'abandoned_disconnected';
 
   @Column({ name: 'abandoned_at', type: 'timestamptz', nullable: true })
   abandonedAt: Date | null;

@@ -6,14 +6,23 @@ import { GamePlayerResult } from './entities/game-player-result.entity';
 
 export interface CreateSessionParams {
   roomName: string;
-  gameType: 'gang' | 'spice' | 'skulking';
+  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle';
   playerCount: number;
   totalRounds?: number;
+}
+
+export interface RecordSingleGameParams {
+  userId: string;
+  gameType: 'minesweeper' | 'slide-puzzle';
+  isWinner: boolean;
+  durationSec: number;
+  extra?: Record<string, unknown>;
 }
 
 export interface InsertPlayerParams {
   sessionId: string;
   playerId: string;
+  userId?: string | null;
   nickname: string;
 }
 
@@ -64,6 +73,7 @@ export class DatabaseService {
         this.playerResultRepo.create({
           sessionId: p.sessionId,
           playerId: p.playerId,
+          userId: p.userId ?? null,
           nickname: p.nickname,
           status: 'completed',
         }),
@@ -74,11 +84,18 @@ export class DatabaseService {
     }
   }
 
-  async markAbandoned(sessionId: string, playerId: string): Promise<void> {
+  async markAbandoned(
+    sessionId: string,
+    playerId: string,
+    reason: 'voluntary' | 'disconnected' = 'disconnected',
+  ): Promise<void> {
     try {
       await this.playerResultRepo.update(
         { sessionId, playerId },
-        { status: 'abandoned', abandonedAt: new Date() },
+        {
+          status: reason === 'voluntary' ? 'abandoned_voluntary' : 'abandoned_disconnected',
+          abandonedAt: new Date(),
+        },
       );
     } catch (e) {
       this.logger.error('markAbandoned 실패', e);
@@ -99,6 +116,33 @@ export class DatabaseService {
       );
     } catch (e) {
       this.logger.error('finalizePlayerResult 실패', e);
+    }
+  }
+
+  async recordSingleGame(params: RecordSingleGameParams): Promise<void> {
+    try {
+      const now = new Date();
+      const session = this.sessionRepo.create({
+        roomName: `single-${params.gameType}`,
+        gameType: params.gameType,
+        playerCount: 1,
+        playedAt: now,
+        durationSec: params.durationSec,
+      });
+      const saved = await this.sessionRepo.save(session);
+      const result = this.playerResultRepo.create({
+        sessionId: saved.id,
+        playerId: params.userId,
+        userId: params.userId,
+        nickname: '',
+        isWinner: params.isWinner,
+        status: 'completed',
+        playTimeSec: params.durationSec,
+        extra: (params.extra ?? null) as object,
+      });
+      await this.playerResultRepo.save(result);
+    } catch (e) {
+      this.logger.error('recordSingleGame 실패', e);
     }
   }
 

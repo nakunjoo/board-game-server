@@ -16,6 +16,7 @@ export class GameContext {
   readonly clients: Set<WebSocket> = new Set();
   readonly rooms: Map<string, Room> = new Map();
   readonly clientRooms: Map<WebSocket, Set<string>> = new Map();
+  readonly clientAuth: Map<WebSocket, string> = new Map(); // socket → userId
 
   // ── 전송 ─────────────────────────────────────────────────
 

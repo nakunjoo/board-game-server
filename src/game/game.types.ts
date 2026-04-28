@@ -122,9 +122,9 @@ export interface Room {
   name: string;
   gameType: string;
   clients: Set<WebSocket>;
-  playerIds: Map<WebSocket, string>; // socket → playerId (고유 식별자)
+  playerIds: Map<WebSocket, string>; // socket → userId (Supabase auth UUID)
   nicknames: Map<WebSocket, string>; // socket → nickname (표시용)
-  disconnectTimers: Map<string, ReturnType<typeof setTimeout>>; // playerId → timer
+  disconnectTimers: Map<string, ReturnType<typeof setTimeout>>; // userId → timer
   state: GameState;
   createdAt: Date;
   gameStarted: boolean;
@@ -138,5 +138,6 @@ export interface Room {
   successCount?: number; // 성공 횟수 (손패 수 결정용: 2회 이상이면 3장)
   supabaseSessionId?: string; // Supabase game_sessions.id
   sessionStartedAt?: number; // 게임 시작 시각 (ms, duration 계산용)
+  pendingAbandonedPlayerIds?: string[]; // sessionId 확정 전 이탈한 playerId 큐
   voiceParticipants?: Map<string, { playerId: string; nickname: string }>; // 음성 통화 참여자
 }

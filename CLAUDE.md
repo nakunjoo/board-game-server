@@ -10,6 +10,11 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-04-28 | **WebSocket 인증 추가 + playerId = userId 전환**: WS 연결 시 `?token=` 쿼리파람으로 Supabase 토큰 검증 (60s 캐시). `handleConnection`에서 userId를 `ctx.clientAuth`에 저장. `createRoom`/`joinRoom` payload의 playerId/userId 무시 → 서버가 `clientAuth.get(client)`로 직접 결정 |
+| 2026-04-28 | `game.context.ts`: `clientAuth: Map<WebSocket, string>` 추가 (소켓 → userId). `handleDisconnect`에서 자동 정리 |
+| 2026-04-28 | `game.gateway.ts`: `handleConnection(client, req: IncomingMessage)` async로 변경. `validateToken()` private 메서드 추가 (supabase admin `auth.getUser` + 60s TOKEN_CACHE). `handleCreateRoom`/`handleJoinRoom` payload 타입에서 `playerId`/`userId` 제거 |
+| 2026-04-28 | `game.types.ts`: `Room` 인터페이스에서 `playerUserIds: Map<string, string>` 제거 (playerId = userId이므로 불필요). `playerIds` 주석을 "Supabase auth UUID"로 수정 |
+| 2026-04-28 | `gang.handler.ts` / `spice.handler.ts` / `skulking.handler.ts`: `insertPlayerResults` 호출 시 `userId: room.playerUserIds.get(p.playerId) ?? null` → `userId: p.playerId` 로 변경 (playerId가 곧 userId) |
 | 2026-04-28 | `game.types.ts`: `Room` 인터페이스에 `voiceParticipants?: Map<string, { playerId: string; nickname: string }>` 필드 추가 |
 | 2026-04-28 | `game.gateway.ts`: 음성 통화 WebRTC 시그널링 핸들러 3개 추가 — `voiceJoin`(방 참여자 목록 반환 + 브로드캐스트), `voiceLeave`(참여자 제거 + 브로드캐스트), `voiceSignal`(offer/answer/ICE 특정 플레이어에게 중계). 시그널은 방 단위로 격리됨 |
 | 2026-02-28 | `skulking.handler.ts`: 선뽑기 선 플레이어가 매 라운드 고정되던 버그 수정 — `resolveTrick`에서 라운드 마지막 트릭 시 `endRound` 호출 전 `skulkingLeadPlayerId = winnerId` 저장 누락 수정 |
