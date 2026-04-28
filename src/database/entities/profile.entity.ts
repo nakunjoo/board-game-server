@@ -13,10 +13,7 @@ export class Profile {
   @Column({ type: 'text' })
   nickname: string;
 
-  @Column({ type: 'text', nullable: true })
-  avatarUrl: string | null;
-
-  @CreateDateColumn({ name: 'created_at' })
+@CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 
   @Column({ name: 'last_seen_at', type: 'timestamptz', nullable: true })
