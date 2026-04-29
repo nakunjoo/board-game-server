@@ -10,6 +10,20 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-04-29 | **게임타입 관리 + 신고 관리 추가** |
+| 2026-04-29 | `entities/game-type.entity.ts` 신규 생성 — `game_types` 테이블 TypeORM 엔티티 (`id TEXT PK`, `label`, `is_active`, `sort_order`, `created_at`) |
+| 2026-04-29 | `game-types/` 모듈 신규 생성 — `GameTypesService`(공개용 `getActiveGameTypes` + 관리자용 전체 CRUD), `GameTypesController`(공개 `GET /api/game-types` — 인증 불필요), `GameTypesModule`(exports GameTypesService) |
+| 2026-04-29 | `manager/manager.service.ts`: 게임타입 CRUD (`getAllGameTypes`, `createGameType`, `updateGameType`, `deleteGameType`) + 신고 관리 (`getReports`, `updateReportStatus`, `banUser`, `unbanUser`) 추가. Report 엔티티 inject, GameTypesService 의존성 주입 |
+| 2026-04-29 | `manager/manager.controller.ts`: `GET/POST/PUT/DELETE /api/manager/game-types`, `GET /api/manager/reports`, `PUT /api/manager/reports/:id/status`, `POST /api/manager/users/:userId/ban`, `POST /api/manager/users/:userId/unban` 추가 |
+| 2026-04-29 | `manager/manager.module.ts`: `Report` 엔티티, `GameTypesModule` import 추가 |
+| 2026-04-29 | `app.module.ts`: `GameType` 엔티티, `GameTypesModule` 등록 |
+| 2026-04-29 | **Supabase 마이그레이션 필요**: `CREATE TABLE game_types (id TEXT PK, label TEXT, is_active BOOL DEFAULT true, sort_order INT DEFAULT 0, created_at TIMESTAMPTZ)` + 기본 3개 행 INSERT (gang/spice/skulking) |
+| 2026-04-29 | **관리자 시스템 추가**: `admins` 테이블 기반 관리자 관리 (`user_id PK`, `granted_by`, `created_at`) |
+| 2026-04-29 | `entities/admin.entity.ts` 신규 생성 — `admins` 테이블 TypeORM 엔티티 |
+| 2026-04-29 | `profile.service.ts`: `getProfile` 응답에 `isAdmin: boolean` 추가 (`admins` 테이블 조회). `isAdmin(userId)` 메서드 추가 |
+| 2026-04-29 | `profile.module.ts`: `Admin` 엔티티 등록, `ProfileService` export 추가 |
+| 2026-04-29 | `manager/` 모듈 신규 생성 — `ManagerGuard`(관리자 체크), `ManagerService`(어드민 CRUD + 닉네임 검색), `ManagerController`(`GET /api/manager/admins`, `POST/DELETE /api/manager/admins/:userId`, `GET /api/manager/users/search`) |
+| 2026-04-29 | `app.module.ts`: `Admin` 엔티티, `ManagerModule` 등록 |
 | 2026-04-28 | **WebSocket 인증 추가 + playerId = userId 전환**: WS 연결 시 `?token=` 쿼리파람으로 Supabase 토큰 검증 (60s 캐시). `handleConnection`에서 userId를 `ctx.clientAuth`에 저장. `createRoom`/`joinRoom` payload의 playerId/userId 무시 → 서버가 `clientAuth.get(client)`로 직접 결정 |
 | 2026-04-28 | `game.context.ts`: `clientAuth: Map<WebSocket, string>` 추가 (소켓 → userId). `handleDisconnect`에서 자동 정리 |
 | 2026-04-28 | `game.gateway.ts`: `handleConnection(client, req: IncomingMessage)` async로 변경. `validateToken()` private 메서드 추가 (supabase admin `auth.getUser` + 60s TOKEN_CACHE). `handleCreateRoom`/`handleJoinRoom` payload 타입에서 `playerId`/`userId` 제거 |

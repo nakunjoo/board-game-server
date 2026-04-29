@@ -6,6 +6,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Profile } from '../database/entities/profile.entity';
+import { Admin } from '../database/entities/admin.entity';
 import { GamePlayerResult } from '../database/entities/game-player-result.entity';
 import { DatabaseService } from '../database/database.service';
 
@@ -26,33 +27,38 @@ export class ProfileService {
   constructor(
     @InjectRepository(Profile)
     private readonly profileRepo: Repository<Profile>,
+    @InjectRepository(Admin)
+    private readonly adminRepo: Repository<Admin>,
     @InjectRepository(GamePlayerResult)
     private readonly playerResultRepo: Repository<GamePlayerResult>,
     private readonly db: DatabaseService,
   ) {}
 
-  async getProfile(userId: string): Promise<{ nickname: string; nicknameUpdatedAt: string | null }> {
+  async getProfile(userId: string): Promise<{ nickname: string; nicknameUpdatedAt: string | null; isAdmin: boolean }> {
     let profile = await this.profileRepo.findOne({ where: { id: userId } });
 
     if (!profile) {
-      // 프로필 없으면 랜덤 닉네임으로 자동 생성
       let nickname = generateRandomNickname();
-
-      // 닉네임 중복 시 재생성 (최대 5회)
       for (let i = 0; i < 5; i++) {
         const exists = await this.profileRepo.findOne({ where: { nickname } });
         if (!exists) break;
         nickname = generateRandomNickname();
       }
-
       profile = this.profileRepo.create({ id: userId, nickname });
       await this.profileRepo.save(profile);
     }
 
+    const isAdmin = !!(await this.adminRepo.findOne({ where: { userId } }));
+
     return {
       nickname: profile.nickname,
       nicknameUpdatedAt: profile.nicknameUpdatedAt?.toISOString() ?? null,
+      isAdmin,
     };
+  }
+
+  async isAdmin(userId: string): Promise<boolean> {
+    return !!(await this.adminRepo.findOne({ where: { userId } }));
   }
 
   async updateNickname(userId: string, newNickname: string): Promise<{ nickname: string; nicknameUpdatedAt: string }> {
