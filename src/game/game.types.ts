@@ -112,6 +112,10 @@ export interface GameState {
   skulkingPlayTimerStartedAt?: number; // 플레이 타이머 시작 시각 (ms)
 
   // 블랙잭 전용
+  bjRoundHistory?: Array<{
+    round: number;
+    results: Array<{ playerId: string; bet: number; chipDelta: number; chipsAfter: number; result: 'win' | 'lose' | 'push' | 'blackjack' | 'bust' }>;
+  }>;
   bjPhase?: 'betting' | 'action' | 'dealer' | 'result'; // 현재 페이즈
   bjBets?: Map<string, number>; // playerId → 이번 라운드 최초 베팅
   bjChips?: Map<string, number>; // playerId → 보유 칩
@@ -165,5 +169,6 @@ export interface Room {
   voiceParticipants?: Map<string, { playerId: string; nickname: string }>; // 음성 통화 참여자
   bjInitialChips?: number; // 블랙잭: 게임 시작 시 지급 칩 수
   bjTotalRounds?: number; // 블랙잭: 총 라운드 수
+  bjStartedAt?: number; // 블랙잭: 게임 시작 타임스탬프 (ms)
   bjBotSockets?: Set<WebSocket>; // 봇 소켓 마커 (가짜 WS 식별용)
 }

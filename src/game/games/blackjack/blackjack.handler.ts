@@ -3,6 +3,7 @@ import { WebSocket } from 'ws';
 import { GameContext } from '../../game.context';
 import { BlackjackEngine } from '../../engines/blackjack.engine';
 import { BjHand, Card, Room } from '../../game.types';
+import { DatabaseService } from '../../../database/database.service';
 
 const ACTION_TIME_MS = 30000; // 액션 페이즈 30초
 
@@ -11,6 +12,7 @@ export class BlackjackHandler {
   constructor(
     private readonly ctx: GameContext,
     private readonly engine: BlackjackEngine,
+    private readonly supabase: DatabaseService,
   ) {}
 
   // ── startGame ─────────────────────────────────────────────
@@ -57,6 +59,31 @@ export class BlackjackHandler {
     }
     room.state.bjChips = bjChips;
     room.state.bjCurrentRound = 0;
+    room.state.bjRoundHistory = [];
+    room.bjStartedAt = Date.now();
+
+    // DB: 세션 생성 + 플레이어 초기 삽입 (fire-and-forget)
+    const now = new Date();
+    const players = this.ctx.getPlayersWithOrder(room);
+    void this.supabase.createSession(
+      { roomName, gameType: 'blackjack', playerCount: room.clients.size, totalRounds: rounds },
+      now,
+    ).then((sessionId) => {
+      if (!sessionId) return;
+      room.supabaseSessionId = sessionId;
+      const realPlayers = players.filter((p) => {
+        const socket = [...room.playerIds.entries()].find(([, pid]) => pid === p.playerId)?.[0];
+        return socket && !room.bjBotSockets?.has(socket);
+      });
+      void this.supabase.insertPlayerResults(
+        realPlayers.map((p) => ({
+          sessionId,
+          playerId: p.playerId,
+          userId: p.playerId,
+          nickname: p.nickname,
+        })),
+      );
+    });
 
     this.startBettingPhase(room);
   }
@@ -521,6 +548,7 @@ export class BlackjackHandler {
     room.state.bjPhase = 'result';
 
     const chips = room.state.bjChips!;
+    const prevChips = new Map<string, number>(chips); // 결산 전 칩 스냅샷
     const playerResults: Array<{
       playerId: string;
       nickname: string;
@@ -593,6 +621,18 @@ export class BlackjackHandler {
       playerResults.push({ playerId, nickname, hands: handResults, chipsAfter });
     }
 
+    // 라운드 히스토리 기록
+    room.state.bjRoundHistory!.push({
+      round: room.state.bjCurrentRound!,
+      results: playerResults.map((p) => ({
+        playerId: p.playerId,
+        bet: p.hands.reduce((s, h) => s + h.bet, 0),
+        chipDelta: p.chipsAfter - (prevChips.get(p.playerId) ?? 0),
+        chipsAfter: p.chipsAfter,
+        result: p.hands[0]?.result ?? 'push',
+      })),
+    });
+
     this.ctx.broadcastToRoom(room.name, 'bjRoundResult', {
       roomName: room.name,
       round: room.state.bjCurrentRound,
@@ -660,6 +700,29 @@ export class BlackjackHandler {
       finalChips: Object.fromEntries(chips),
       ranking,
     });
+
+    // DB: 세션 종료 및 플레이어 결과 저장 (fire-and-forget)
+    if (room.supabaseSessionId) {
+      const sessionId = room.supabaseSessionId;
+      const durationSec = Math.round((Date.now() - (room.bjStartedAt ?? Date.now())) / 1000);
+      void this.supabase.updateSessionDuration(sessionId, durationSec, room.bjTotalRounds);
+
+      for (const { playerId, chips: finalChips, rank } of ranking) {
+        const socket = [...room.playerIds.entries()].find(([, pid]) => pid === playerId)?.[0];
+        if (socket && room.bjBotSockets?.has(socket)) continue; // 봇 제외
+        void this.supabase.finalizePlayerResult({
+          sessionId,
+          playerId,
+          isWinner: rank === 1,
+          score: finalChips,
+          rank,
+          extra: {
+            initialChips: room.bjInitialChips,
+            rounds: room.state.bjRoundHistory,
+          },
+        });
+      }
+    }
   }
 
   private handleDeckEmpty(room: Room): void {

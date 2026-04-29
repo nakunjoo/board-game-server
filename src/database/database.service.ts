@@ -6,7 +6,7 @@ import { GamePlayerResult } from './entities/game-player-result.entity';
 
 export interface CreateSessionParams {
   roomName: string;
-  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle';
+  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle' | 'blackjack';
   playerCount: number;
   totalRounds?: number;
 }
