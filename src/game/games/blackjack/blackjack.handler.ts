@@ -480,19 +480,34 @@ export class BlackjackHandler {
       room.state.bjDealerHand!.push(room.state.deck.pop()!);
     }
 
-    const dealerValue = this.calculateHandValue(room.state.bjDealerHand!);
+    const finalHand = [...room.state.bjDealerHand!];
+    const dealerValue = this.calculateHandValue(finalHand);
     const dealerBust = dealerValue > 21;
-    const dealerBj = this.isBlackjack(room.state.bjDealerHand!);
+    const dealerBj = this.isBlackjack(finalHand);
 
-    this.ctx.broadcastToRoom(room.name, 'bjDealerPhase', {
-      roomName: room.name,
-      dealerHand: room.state.bjDealerHand,
-      dealerValue,
-      dealerBust,
-      dealerBlackjack: dealerBj,
-    });
-
-    this.calculateResults(room, dealerValue, dealerBust, dealerBj);
+    // 딜러 카드를 한 장씩 700ms 간격으로 전송
+    let delay = 0;
+    for (let i = 0; i < finalHand.length; i++) {
+      const revealedSoFar = finalHand.slice(0, i + 1);
+      const isLast = i === finalHand.length - 1;
+      const currentValue = this.calculateHandValue(revealedSoFar);
+      setTimeout(() => {
+        this.ctx.broadcastToRoom(room.name, 'bjDealerPhase', {
+          roomName: room.name,
+          dealerHand: revealedSoFar,
+          dealerValue: currentValue,
+          dealerBust: isLast && dealerBust,
+          dealerBlackjack: isLast && dealerBj,
+          isFinal: isLast,
+        });
+        if (isLast) {
+          setTimeout(() => {
+            this.calculateResults(room, dealerValue, dealerBust, dealerBj);
+          }, 800);
+        }
+      }, delay);
+      delay += 700;
+    }
   }
 
   // ── 결산 ──────────────────────────────────────────────
@@ -589,6 +604,14 @@ export class BlackjackHandler {
       playerResults,
       chips: Object.fromEntries(chips),
     });
+
+    // 봇은 자동으로 다음 라운드 준비
+    if (room.bjBotSockets) {
+      for (const botWs of room.bjBotSockets) {
+        const botId = room.playerIds.get(botWs);
+        if (botId) room.state.bjNextRoundReady!.add(botId);
+      }
+    }
   }
 
   // ── 다음 라운드 / 게임 종료 ──────────────────────────────
@@ -614,17 +637,7 @@ export class BlackjackHandler {
 
     if (room.state.bjNextRoundReady!.size < room.clients.size) return;
 
-    // 칩이 0인 플레이어 체크 → 게임 오버
-    const chips = room.state.bjChips!;
-    const brokePlayers: string[] = [];
-    for (const [, pid] of room.playerIds) {
-      if ((chips.get(pid) ?? 0) <= 0) brokePlayers.push(pid);
-    }
-
-    if (
-      brokePlayers.length > 0 ||
-      (room.state.bjCurrentRound ?? 0) >= (room.bjTotalRounds ?? 5)
-    ) {
+    if ((room.state.bjCurrentRound ?? 0) >= (room.bjTotalRounds ?? 5)) {
       this.endGame(room);
       return;
     }
