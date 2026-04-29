@@ -164,7 +164,6 @@ export class SkulkingHandler {
       this.supabase.insertPlayerResults(
         players.map((p) => ({
           sessionId,
-          playerId: p.playerId,
           userId: p.playerId,
           nickname: p.nickname,
         })),
@@ -743,7 +742,7 @@ export class SkulkingHandler {
       ranking.forEach((r) => {
         this.supabase.finalizePlayerResult({
           sessionId,
-          playerId: r.playerId,
+          userId: r.playerId,
           isWinner: r.rank === 1,
           score: r.score,
           rank: r.rank,

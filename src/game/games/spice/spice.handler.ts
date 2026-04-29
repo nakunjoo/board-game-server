@@ -181,7 +181,6 @@ export class SpiceHandler {
       this.supabase.insertPlayerResults(
         players.map((p) => ({
           sessionId,
-          playerId: p.playerId,
           userId: p.playerId,
           nickname: p.nickname,
         })),
@@ -1034,7 +1033,7 @@ export class SpiceHandler {
       playerResults.forEach((r, idx) => {
         this.supabase.finalizePlayerResult({
           sessionId,
-          playerId: r.playerId,
+          userId: r.playerId,
           isWinner: winnerIds.has(r.playerId),
           score: r.score,
           rank: idx + 1,

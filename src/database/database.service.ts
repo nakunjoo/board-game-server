@@ -21,14 +21,13 @@ export interface RecordSingleGameParams {
 
 export interface InsertPlayerParams {
   sessionId: string;
-  playerId: string;
-  userId?: string | null;
+  userId: string;
   nickname: string;
 }
 
 export interface FinalizePlayerParams {
   sessionId: string;
-  playerId: string;
+  userId: string;
   isWinner: boolean;
   score?: number;
   rank?: number;
@@ -72,8 +71,7 @@ export class DatabaseService {
       const rows = players.map((p) =>
         this.playerResultRepo.create({
           sessionId: p.sessionId,
-          playerId: p.playerId,
-          userId: p.userId ?? null,
+          userId: p.userId,
           nickname: p.nickname,
           status: 'completed',
         }),
@@ -86,12 +84,12 @@ export class DatabaseService {
 
   async markAbandoned(
     sessionId: string,
-    playerId: string,
+    userId: string,
     reason: 'voluntary' | 'disconnected' = 'disconnected',
   ): Promise<void> {
     try {
       await this.playerResultRepo.update(
-        { sessionId, playerId },
+        { sessionId, userId },
         {
           status: reason === 'voluntary' ? 'abandoned_voluntary' : 'abandoned_disconnected',
           abandonedAt: new Date(),
@@ -105,7 +103,7 @@ export class DatabaseService {
   async finalizePlayerResult(params: FinalizePlayerParams): Promise<void> {
     try {
       await this.playerResultRepo.update(
-        { sessionId: params.sessionId, playerId: params.playerId },
+        { sessionId: params.sessionId, userId: params.userId },
         {
           isWinner: params.isWinner,
           score: params.score ?? null,
@@ -132,7 +130,6 @@ export class DatabaseService {
       const saved = await this.sessionRepo.save(session);
       const result = this.playerResultRepo.create({
         sessionId: saved.id,
-        playerId: params.userId,
         userId: params.userId,
         nickname: '',
         isWinner: params.isWinner,

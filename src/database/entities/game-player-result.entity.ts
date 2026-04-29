@@ -22,10 +22,7 @@ export class GamePlayerResult {
   sessionId: string;
 
   @Column({ name: 'user_id', type: 'uuid', nullable: true })
-  userId: string | null; // Supabase auth.users.id (로그인 붙이면 채워짐)
-
-  @Column({ name: 'player_id', type: 'text' })
-  playerId: string; // 클라이언트 생성 ID
+  userId: string | null;
 
   @Column({ type: 'text' })
   nickname: string;

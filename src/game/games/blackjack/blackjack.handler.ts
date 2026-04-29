@@ -78,7 +78,6 @@ export class BlackjackHandler {
       void this.supabase.insertPlayerResults(
         realPlayers.map((p) => ({
           sessionId,
-          playerId: p.playerId,
           userId: p.playerId,
           nickname: p.nickname,
         })),
@@ -712,7 +711,7 @@ export class BlackjackHandler {
         if (socket && room.bjBotSockets?.has(socket)) continue; // 봇 제외
         void this.supabase.finalizePlayerResult({
           sessionId,
-          playerId,
+          userId: playerId,
           isWinner: rank === 1,
           score: finalChips,
           rank,

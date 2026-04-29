@@ -95,7 +95,6 @@ export class GangHandler {
       this.supabase.insertPlayerResults(
         players.map((p) => ({
           sessionId,
-          playerId: p.playerId,
           userId: p.playerId,
           nickname: p.nickname,
         })),
@@ -788,7 +787,7 @@ export class GangHandler {
       playerResults.forEach((r, idx) => {
         this.supabase.finalizePlayerResult({
           sessionId,
-          playerId: r.playerId,
+          userId: r.playerId,
           isWinner: gameOverResult === 'victory',
           rank: idx + 1,
           extra: {
