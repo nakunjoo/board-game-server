@@ -109,17 +109,12 @@ export class BlackjackHandler {
       return;
     }
 
-    const myChips = room.state.bjChips?.get(playerId) ?? 0;
     const maxBet = Math.floor((room.bjInitialChips ?? 100) / 2);
 
     if (amount < 1 || amount > maxBet) {
       this.ctx.sendToClient(client, 'error', {
         message: `베팅액은 1 이상 ${maxBet} 이하여야 합니다`,
       });
-      return;
-    }
-    if (amount > myChips) {
-      this.ctx.sendToClient(client, 'error', { message: '칩이 부족합니다' });
       return;
     }
 
@@ -325,11 +320,6 @@ export class BlackjackHandler {
       return;
     }
 
-    const myChips = room.state.bjChips?.get(playerId) ?? 0;
-    if (myChips < hand.bet) {
-      this.ctx.sendToClient(client, 'error', { message: '더블다운을 위한 칩이 부족합니다' });
-      return;
-    }
     if (room.state.deck.length === 0) {
       this.handleDeckEmpty(room);
       return;
