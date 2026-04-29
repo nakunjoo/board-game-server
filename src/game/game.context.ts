@@ -125,6 +125,18 @@ export class GameContext {
       this.rooms.delete(roomName);
       console.log(`Room '${roomName}' deleted (empty)`);
     } else {
+      // 실제 플레이어가 아무도 없고 봇만 남은 경우 방 정리
+      const botSockets = room.bjBotSockets;
+      if (botSockets && botSockets.size > 0 && room.clients.size === botSockets.size) {
+        botSockets.forEach((bs) => {
+          room.clients.delete(bs);
+          room.playerIds.delete(bs);
+          room.nicknames.delete(bs);
+        });
+        this.rooms.delete(roomName);
+        console.log(`Room '${roomName}' deleted (bots only)`);
+        return;
+      }
       this.broadcastToRoom(roomName, 'userLeft', {
         roomName,
         memberCount: room.clients.size,

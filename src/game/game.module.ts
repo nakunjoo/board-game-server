@@ -5,12 +5,14 @@ import { GameContext } from './game.context';
 import { GangHandler } from './games/gang/gang.handler';
 import { SpiceHandler } from './games/spice/spice.handler';
 import { SkulkingHandler } from './games/skulking/skulking.handler';
+import { BlackjackHandler } from './games/blackjack/blackjack.handler';
 import { StandardCardEngine } from './engines/standard-card.engine';
 import { SpiceEngine } from './engines/spice.engine';
 import { SkulkingEngine } from './engines/skulking.engine';
+import { BlackjackEngine } from './engines/blackjack.engine';
 import { DatabaseModule } from '../database/database.module';
 
-const ENGINES = [StandardCardEngine, SpiceEngine, SkulkingEngine];
+const ENGINES = [StandardCardEngine, SpiceEngine, SkulkingEngine, BlackjackEngine];
 
 @Module({
   imports: [DatabaseModule],
@@ -26,6 +28,7 @@ const ENGINES = [StandardCardEngine, SpiceEngine, SkulkingEngine];
     GangHandler,
     SpiceHandler,
     SkulkingHandler,
+    BlackjackHandler,
     GameGateway,
   ],
 })

@@ -110,6 +110,29 @@ export interface GameState {
   skulkingPlayTimer?: ReturnType<typeof setTimeout>; // 플레이 자동 제출 타이머
   skulkingBidTimerStartedAt?: number; // 비드 타이머 시작 시각 (ms)
   skulkingPlayTimerStartedAt?: number; // 플레이 타이머 시작 시각 (ms)
+
+  // 블랙잭 전용
+  bjPhase?: 'betting' | 'action' | 'dealer' | 'result'; // 현재 페이즈
+  bjBets?: Map<string, number>; // playerId → 이번 라운드 최초 베팅
+  bjChips?: Map<string, number>; // playerId → 보유 칩
+  bjPlayerHands?: Map<string, BjHand[]>; // playerId → 핸드 배열 (스플릿 시 2개)
+  bjDealerHand?: Card[]; // 딜러 공개 카드
+  bjDealerHoleCard?: Card | null; // 딜러 홀카드 (비공개, 딜러 페이즈 전까지 null)
+  bjActionDone?: Set<string>; // 액션 완료한 playerId
+  bjBettingDone?: Set<string>; // 베팅 완료한 playerId
+  bjActionTimer?: ReturnType<typeof setTimeout>; // 30초 액션 타이머
+  bjActionTimerStartedAt?: number | null; // 타이머 시작 시각 (ms, 재연결 동기화용)
+  bjCurrentRound?: number; // 현재 라운드 번호 (1부터 시작)
+  bjNextRoundReady?: Set<string>; // 다음 라운드 준비 완료한 playerId
+}
+
+// 블랙잭 핸드 (스플릿 시 2개)
+export interface BjHand {
+  cards: Card[];
+  bet: number; // 핸드별 베팅 (더블/스플릿으로 증가)
+  status: 'active' | 'stand' | 'bust' | 'blackjack' | 'doubled';
+  result?: 'win' | 'lose' | 'push';
+  payout?: number; // 결산 후 실제 지급액 (베팅액 포함)
 }
 
 export interface PlayerResult {
@@ -140,4 +163,7 @@ export interface Room {
   sessionStartedAt?: number; // 게임 시작 시각 (ms, duration 계산용)
   pendingAbandonedPlayerIds?: string[]; // sessionId 확정 전 이탈한 playerId 큐
   voiceParticipants?: Map<string, { playerId: string; nickname: string }>; // 음성 통화 참여자
+  bjInitialChips?: number; // 블랙잭: 게임 시작 시 지급 칩 수
+  bjTotalRounds?: number; // 블랙잭: 총 라운드 수
+  bjBotSockets?: Set<WebSocket>; // 봇 소켓 마커 (가짜 WS 식별용)
 }
