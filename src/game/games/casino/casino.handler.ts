@@ -102,29 +102,38 @@ export class CasinoHandler {
         sessionStartedAt,
       )
       .then((sessionId) => {
-        if (!sessionId) return;
+        if (!sessionId) {
+          console.error(`[Casino] createSession 실패 - sessionId가 null. roomName: ${roomName}`);
+          return;
+        }
+        console.log(`[Casino] DB 세션 생성 완료: ${sessionId} (room: ${roomName})`);
         room.supabaseSessionId = sessionId;
-        this.supabase.insertPlayerResults(
+        return this.supabase.insertPlayerResults(
           playerList.map((p) => ({
             sessionId,
             userId: p.playerId,
             nickname: p.nickname,
           })),
-        );
-        // pendingAbandonedPlayerIds 처리
-        if (room.pendingAbandonedPlayerIds?.length) {
-          for (const entry of room.pendingAbandonedPlayerIds) {
-            const colonIdx = entry.indexOf(':');
-            const reason = entry.slice(0, colonIdx);
-            const pid = entry.slice(colonIdx + 1);
-            this.supabase.markAbandoned(
-              sessionId,
-              pid,
-              reason as 'voluntary' | 'disconnected',
-            );
+        ).then(() => {
+          console.log(`[Casino] DB 플레이어 결과 행 삽입 완료 (${playerList.length}명)`);
+          // pendingAbandonedPlayerIds 처리
+          if (room.pendingAbandonedPlayerIds?.length) {
+            for (const entry of room.pendingAbandonedPlayerIds) {
+              const colonIdx = entry.indexOf(':');
+              const reason = entry.slice(0, colonIdx);
+              const pid = entry.slice(colonIdx + 1);
+              this.supabase.markAbandoned(
+                sessionId,
+                pid,
+                reason as 'voluntary' | 'disconnected',
+              );
+            }
+            room.pendingAbandonedPlayerIds = [];
           }
-          room.pendingAbandonedPlayerIds = [];
-        }
+        });
+      })
+      .catch((e) => {
+        console.error(`[Casino] DB 세션 초기화 중 예외 발생:`, e);
       });
 
     console.log(
@@ -428,6 +437,7 @@ export class CasinoHandler {
         ? Math.floor((Date.now() - room.sessionStartedAt) / 1000)
         : 0;
 
+      console.log(`[Casino] DB 결과 저장 시작 (sessionId: ${sessionId}, ${playerList.length}명)`);
       this.supabase.updateSessionDuration(sessionId, durationSec);
 
       for (const p of playerList) {
@@ -489,6 +499,8 @@ export class CasinoHandler {
     const elapsedSec = room.casinoStartedAt
       ? Math.floor((Date.now() - room.casinoStartedAt) / 1000)
       : 0;
+    const timeLimit = room.casinoTimeLimit ?? null;
+    const remainingSec = timeLimit !== null ? Math.max(0, timeLimit - elapsedSec) : null;
 
     const allHistories: Record<string, { t: number; b: number }[]> = {};
     if (room.state.casinoHistory) {
@@ -500,8 +512,8 @@ export class CasinoHandler {
     return {
       casinoStarted: true,
       casinoInitialBalance: room.casinoInitialBalance ?? 0,
-      casinoTimeLimit: room.casinoTimeLimit ?? null,
-      casinoElapsedSec: elapsedSec,
+      casinoTimeLimit: timeLimit,
+      casinoRemainingSeconds: remainingSec,
       casinoPlayers: players,
       casinoMyHistory: allHistories[playerId] ?? [],
       casinoAllHistories: allHistories,

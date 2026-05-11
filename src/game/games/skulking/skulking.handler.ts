@@ -753,6 +753,12 @@ export class SkulkingHandler {
             roundScores: room.state.roundScores
               ? Array.from(room.state.roundScores.get(r.playerId) ?? [])
               : [],
+            roundHistory: (room.state.roundBidTrickHistory ?? []).map((h) => ({
+              round: h.round,
+              bid: h.bids[r.playerId] ?? 0,
+              tricks: h.tricks[r.playerId] ?? 0,
+              score: (room.state.roundScores?.get(r.playerId) ?? [])[h.round - 1] ?? 0,
+            })),
           },
         });
       });

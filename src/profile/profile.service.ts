@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Profile } from '../database/entities/profile.entity';
 import { Admin } from '../database/entities/admin.entity';
 import { GamePlayerResult } from '../database/entities/game-player-result.entity';
@@ -114,6 +114,20 @@ export class ProfileService {
       take: 50,
     });
 
+    if (results.length === 0) return [];
+
+    const sessionIds = results.map((r) => r.sessionId);
+    const allPlayers = await this.playerResultRepo.find({
+      where: { sessionId: In(sessionIds) },
+      select: ['sessionId', 'userId', 'nickname', 'isWinner', 'score', 'rank'],
+    });
+
+    const playersBySession = new Map<string, typeof allPlayers>();
+    for (const p of allPlayers) {
+      if (!playersBySession.has(p.sessionId)) playersBySession.set(p.sessionId, []);
+      playersBySession.get(p.sessionId)!.push(p);
+    }
+
     return results.map((r) => ({
       sessionId: r.sessionId,
       gameType: r.session.gameType,
@@ -125,6 +139,16 @@ export class ProfileService {
       isWinner: r.isWinner,
       score: r.score,
       rank: r.rank,
+      extra: r.extra ?? null,
+      players: (playersBySession.get(r.sessionId) ?? [])
+        .sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999))
+        .map((p) => ({
+          nickname: p.nickname,
+          isWinner: p.isWinner,
+          score: p.score,
+          rank: p.rank,
+          isMe: p.userId === userId,
+        })),
     }));
   }
 }
