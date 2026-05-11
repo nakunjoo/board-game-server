@@ -147,9 +147,9 @@ export class CasinoHandler {
       players,
     });
 
-    // 타임리밋 타이머 설정
+    // 타임리밋 타이머 설정 (timeLimit = 초 단위)
     if (timeLimit !== null && timeLimit > 0) {
-      const ms = timeLimit * 60 * 1000;
+      const ms = timeLimit * 1000;
       room.casinoTimer = setTimeout(() => {
         this.finishGame(roomName, 'timer');
       }, ms);
@@ -388,7 +388,16 @@ export class CasinoHandler {
       const finalBalance = rawBalance - loanRepayment;
       const profit = finalBalance - initialBalance;
       const gamesPlayed = room.state.casinoGamesPlayed?.get(pid) ?? {};
-      const history = room.state.casinoHistory?.get(pid) ?? [];
+      const history = [...(room.state.casinoHistory?.get(pid) ?? [])];
+
+      // 대출 상환 후 실제 최종 잔액이 마지막 히스토리와 다르면 끝점 추가
+      const elapsedSec = room.casinoStartedAt
+        ? Math.floor((Date.now() - room.casinoStartedAt) / 1000)
+        : 0;
+      const lastB = history.length > 0 ? history[history.length - 1].b : rawBalance;
+      if (lastB !== finalBalance) {
+        history.push({ t: elapsedSec, b: finalBalance });
+      }
 
       playerList.push({
         playerId: pid,
@@ -440,6 +449,13 @@ export class CasinoHandler {
       console.log(`[Casino] DB 결과 저장 시작 (sessionId: ${sessionId}, ${playerList.length}명)`);
       this.supabase.updateSessionDuration(sessionId, durationSec);
 
+      const playersHistory = playerList.map((pl) => ({
+        playerId: pl.playerId,
+        nickname: pl.nickname,
+        history: pl.history,
+        rank: pl.rank,
+      }));
+
       for (const p of playerList) {
         this.supabase.finalizePlayerResult({
           sessionId,
@@ -453,6 +469,8 @@ export class CasinoHandler {
             profit: p.profit,
             gamesPlayed: p.gamesPlayed,
             history: p.history,
+            myPlayerId: p.playerId,
+            playersHistory,
           },
         });
       }

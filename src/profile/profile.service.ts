@@ -4,13 +4,13 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, IsNull, Not, Repository } from 'typeorm';
 import { Profile } from '../database/entities/profile.entity';
 import { Admin } from '../database/entities/admin.entity';
 import { GamePlayerResult } from '../database/entities/game-player-result.entity';
 import { DatabaseService } from '../database/database.service';
 
-const COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+const COOLDOWN_MS = 1 * 24 * 60 * 60 * 1000;
 
 const PREFIXES = ['붉은', '푸른', '검은', '흰', '금빛'];
 const NOUNS = ['여우', '곰', '토끼', '늑대', '사자', '펭귄', '판다', '매'];
@@ -76,7 +76,7 @@ export class ProfileService {
       if (elapsed < COOLDOWN_MS) {
         const nextDate = new Date(profile.nicknameUpdatedAt.getTime() + COOLDOWN_MS);
         throw new BadRequestException(
-          `닉네임은 7일에 한 번만 변경할 수 있습니다. 다음 변경 가능일: ${nextDate.toLocaleDateString('ko-KR')}`,
+          `닉네임은 하루에 한 번만 변경할 수 있습니다. 다음 변경 가능일: ${nextDate.toLocaleDateString('ko-KR')}`,
         );
       }
     }
@@ -108,7 +108,11 @@ export class ProfileService {
 
   async getHistory(userId: string) {
     const results = await this.playerResultRepo.find({
-      where: { userId },
+      where: [
+        { userId, status: 'completed', isWinner: Not(IsNull()) },
+        { userId, status: 'abandoned_voluntary' },
+        { userId, status: 'abandoned_disconnected' },
+      ],
       relations: ['session'],
       order: { session: { playedAt: 'DESC' } },
       take: 50,
