@@ -479,14 +479,20 @@ export class CasinoHandler {
       ? Math.floor((Date.now() - room.casinoStartedAt) / 1000)
       : 0;
 
-    const myHistory = room.state.casinoHistory?.get(playerId) ?? [];
+    const allHistories: Record<string, { t: number; b: number }[]> = {};
+    if (room.state.casinoHistory) {
+      for (const [pid, hist] of room.state.casinoHistory) {
+        allHistories[pid] = hist;
+      }
+    }
 
     return {
       casinoInitialBalance: room.casinoInitialBalance ?? 0,
       casinoTimeLimit: room.casinoTimeLimit ?? null,
       casinoElapsedSec: elapsedSec,
       casinoPlayers: players,
-      casinoMyHistory: myHistory,
+      casinoMyHistory: allHistories[playerId] ?? [],
+      casinoAllHistories: allHistories,
       casinoVotes: Array.from(room.state.casinoVotes ?? []),
     };
   }
