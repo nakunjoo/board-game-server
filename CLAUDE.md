@@ -10,6 +10,9 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-05-11 | **게임 기록 상세 데이터 보강** |
+| 2026-05-11 | `profile/profile.service.ts`: `getHistory`에서 같은 세션 모든 플레이어 row를 `In(sessionIds)`로 추가 조회 → `players` 배열로 반환 (rank 기준 정렬, `isMe` 플래그 포함) |
+| 2026-05-11 | `game/games/skulking/skulking.handler.ts`: `extra`에 `roundHistory` 추가 — `roundBidTrickHistory`를 플레이어별로 변환한 `{ round, bid, tricks, score }[]` |
 | 2026-05-11 | **카지노 대출 시스템 추가** |
 | 2026-05-11 | `game/game.types.ts`: `GameState`에 `casinoLoans?: Map<string, number>` 추가 (playerId → 누적 대출금) |
 | 2026-05-11 | `game/games/casino/casino.handler.ts`: `handleLoan` 추가 — 대출금 잔액 반영, 누적 기록, 본인에게 `casinoLoanConfirmed` 전송, 전체에게 `casinoBalanceUpdate` 브로드캐스트. `finishGame`에서 `totalLoan * 1.1` 차감 후 finalBalance 계산 (음수 허용). `handleStart`/`finishGame`에 `casinoLoans` 초기화/정리 추가 |
