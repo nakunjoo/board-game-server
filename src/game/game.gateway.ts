@@ -154,7 +154,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    const engine = this.engineFactory.get(gameType);
+    const deck = gameType === 'casino' ? [] : this.engineFactory.get(gameType).createDeck();
 
     const room = {
       name,
@@ -164,7 +164,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       nicknames: new Map([[client, nickname]]),
       disconnectTimers: new Map(),
       state: {
-        deck: engine.createDeck(),
+        deck,
         hands: new Map([[client, []]]),
         currentTurn: 0,
         playerOrder: [client],
