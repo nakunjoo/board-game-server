@@ -111,6 +111,14 @@ export interface GameState {
   skulkingBidTimerStartedAt?: number; // 비드 타이머 시작 시각 (ms)
   skulkingPlayTimerStartedAt?: number; // 플레이 타이머 시작 시각 (ms)
 
+  // 카지노 전용 (GameState 내 플레이어별 데이터)
+  casinoBalances?: Map<string, number>; // playerId → 잔액
+  casinoCurrentGames?: Map<string, string | null>; // playerId → 현재 플레이 중인 게임
+  casinoHistory?: Map<string, { t: number; b: number }[]>; // playerId → 잔액 히스토리 [{t: 경과초, b: 잔액}]
+  casinoGamesPlayed?: Map<string, Record<string, number>>; // playerId → 게임별 플레이 횟수
+  casinoVotes?: Set<string>; // 조기 종료 투표한 playerId
+  casinoLoans?: Map<string, number>; // playerId → 총 대출금액 누적
+
   // 블랙잭 전용
   bjRoundHistory?: Array<{
     round: number;
@@ -171,4 +179,8 @@ export interface Room {
   bjTotalRounds?: number; // 블랙잭: 총 라운드 수
   bjStartedAt?: number; // 블랙잭: 게임 시작 타임스탬프 (ms)
   bjBotSockets?: Set<WebSocket>; // 봇 소켓 마커 (가짜 WS 식별용)
+  casinoInitialBalance?: number; // 카지노: 게임 시작 시 지급 잔액
+  casinoTimeLimit?: number | null; // 카지노: 시간 제한 (분, null=무제한)
+  casinoStartedAt?: number; // 카지노: 게임 시작 타임스탬프 (ms)
+  casinoTimer?: ReturnType<typeof setTimeout>; // 카지노: 타임리밋 타이머
 }

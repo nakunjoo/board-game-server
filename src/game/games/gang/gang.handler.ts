@@ -18,7 +18,7 @@ export class GangHandler {
 
   // ── startGame ─────────────────────────────────────────────
 
-  handleStartGame(data: { roomName: string }, client: WebSocket): void {
+  async handleStartGame(data: { roomName: string }, client: WebSocket): Promise<void> {
     const { roomName } = data;
     const room = this.ctx.rooms.get(roomName);
 
@@ -29,7 +29,10 @@ export class GangHandler {
       return;
     }
 
-    if (room.clients.size < 3) {
+    const playerId = room.playerIds.get(client);
+    const adminBypass = playerId ? await this.supabase.isAdmin(playerId) : false;
+
+    if (!adminBypass && room.clients.size < 3) {
       this.ctx.sendToClient(client, 'error', {
         message: '게임을 시작하려면 최소 3명이 필요합니다',
       });

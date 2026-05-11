@@ -18,7 +18,7 @@ export class SkulkingHandler {
 
   // ── 게임 시작 ──────────────────────────────────────────────
 
-  handleStartGame(data: { roomName: string }, client: WebSocket): void {
+  async handleStartGame(data: { roomName: string }, client: WebSocket): Promise<void> {
     const { roomName } = data;
     const room = this.ctx.rooms.get(roomName);
 
@@ -27,12 +27,15 @@ export class SkulkingHandler {
       return;
     }
 
-    if (room.playerIds.get(client) !== room.hostPlayerId) {
+    const playerId = room.playerIds.get(client);
+    if (playerId !== room.hostPlayerId) {
       this.ctx.sendToClient(client, 'error', { message: '방장만 게임을 시작할 수 있습니다' });
       return;
     }
 
-    if (room.clients.size < 2) {
+    const adminBypass = playerId ? await this.supabase.isAdmin(playerId) : false;
+
+    if (!adminBypass && room.clients.size < 2) {
       this.ctx.sendToClient(client, 'error', { message: '스컬킹은 최소 2명이 필요합니다' });
       return;
     }

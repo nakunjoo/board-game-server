@@ -10,6 +10,17 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-05-11 | **카지노 대출 시스템 추가** |
+| 2026-05-11 | `game/game.types.ts`: `GameState`에 `casinoLoans?: Map<string, number>` 추가 (playerId → 누적 대출금) |
+| 2026-05-11 | `game/games/casino/casino.handler.ts`: `handleLoan` 추가 — 대출금 잔액 반영, 누적 기록, 본인에게 `casinoLoanConfirmed` 전송, 전체에게 `casinoBalanceUpdate` 브로드캐스트. `finishGame`에서 `totalLoan * 1.1` 차감 후 finalBalance 계산 (음수 허용). `handleStart`/`finishGame`에 `casinoLoans` 초기화/정리 추가 |
+| 2026-05-11 | `game/game.gateway.ts`: `casinoLoan` 이벤트 핸들러 추가 |
+| 2026-05-11 | **카지노 게임 추가** |
+| 2026-05-11 | `game/games/casino/casino.handler.ts` 신규 생성 — `casinoStart`/`casinoBetPlace`/`casinoResult`/`casinoSwitchGame`/`casinoVoteEnd` 이벤트 처리. `handleBetPlace`: 잔액에서 베팅금 차감. `handleResult`: 잔액에 delta 추가 + 히스토리 포인트 기록. `finishGame`: 타이머 만료 또는 과반수 투표 시 종료. `buildCasinoState`: 재연결 시 카지노 전체 상태 복원 |
+| 2026-05-11 | `game/game.types.ts`: `GameState`에 카지노 전용 필드 추가 (`casinoBalances`, `casinoCurrentGames`, `casinoHistory`, `casinoGamesPlayed`, `casinoVotes`). `Room`에 `casinoInitialBalance`, `casinoTimeLimit`, `casinoStartedAt`, `casinoTimer` 추가 |
+| 2026-05-11 | `game/game.module.ts`: `CasinoHandler` 등록 |
+| 2026-05-11 | `game/game.gateway.ts`: `CasinoHandler` 주입. `casinoStart`/`casinoBetPlace`/`casinoResult`/`casinoSwitchGame`/`casinoVoteEnd` 이벤트 핸들러 추가. `roomJoined`에 casino 재연결 상태(`casinoStarted`, `casinoInitialBalance`, `casinoTimeLimit`, `casinoRemainingSeconds`, `casinoPlayers`, `casinoVotes`) 포함 |
+| 2026-05-11 | `database/database.service.ts`: `CreateSessionParams.gameType`에 `'casino'` 추가 |
+| 2026-05-11 | **카지노 WebSocket 이벤트** — 클라이언트→서버: `casinoStart`(roomName, timeLimit, initialBalance) / `casinoBetPlace`(roomName, amount) / `casinoResult`(roomName, delta, gameType) / `casinoSwitchGame`(roomName, game) / `casinoVoteEnd`(roomName). 서버→클라이언트: `casinoStarted`(initialBalance, timeLimit, players) / `casinoBalanceUpdate`(playerId, balance, delta, historyPoint) / `casinoPlayerUpdate`(playerId, currentGame) / `casinoVoteStatus`(votes, needed, total) / `casinoGameOver`(players 순위, 결과) |
 | 2026-04-29 | **게임타입 관리 + 신고 관리 추가** |
 | 2026-04-29 | `entities/game-type.entity.ts` 신규 생성 — `game_types` 테이블 TypeORM 엔티티 (`id TEXT PK`, `label`, `is_active`, `sort_order`, `created_at`) |
 | 2026-04-29 | `game-types/` 모듈 신규 생성 — `GameTypesService`(공개용 `getActiveGameTypes` + 관리자용 전체 CRUD), `GameTypesController`(공개 `GET /api/game-types` — 인증 불필요), `GameTypesModule`(exports GameTypesService) |

@@ -15,7 +15,7 @@ import { GameContext } from './game.context';
 import { GangHandler } from './games/gang/gang.handler';
 import { SpiceHandler } from './games/spice/spice.handler';
 import { SkulkingHandler } from './games/skulking/skulking.handler';
-import { BlackjackHandler } from './games/blackjack/blackjack.handler';
+import { CasinoHandler } from './games/casino/casino.handler';
 import { DatabaseService } from '../database/database.service';
 
 interface TokenCacheEntry {
@@ -41,7 +41,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly gangHandler: GangHandler,
     private readonly spiceHandler: SpiceHandler,
     private readonly skulkingHandler: SkulkingHandler,
-    private readonly blackjackHandler: BlackjackHandler,
+    private readonly casinoHandler: CasinoHandler,
     private readonly supabase: DatabaseService,
   ) {}
 
@@ -291,10 +291,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return this.skulkingHandler.buildSkulkingState(room);
     };
 
-    // ── Blackjack 재연결 공통 필드 ────────────────────────────
-    const buildBlackjackState = () => {
-      if (room.gameType !== 'blackjack') return {};
-      return this.blackjackHandler.buildBlackjackState(room, playerId);
+    // ── Casino 재연결 공통 필드 ───────────────────────────────
+    const buildCasinoState = () => {
+      if (room.gameType !== 'casino') return {};
+      return this.casinoHandler.buildCasinoState(room, playerId!);
     };
 
     // ── Spice 재연결 공통 필드 ─────────────────────────────────
@@ -373,7 +373,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const spice = buildSpiceState();
       const firstDraw = buildFirstDrawState();
       const skulking = buildSkulkingState();
-      const blackjack = buildBlackjackState();
+      const casino = buildCasinoState();
 
       this.ctx.sendToClient(client, 'roomJoined', {
         name,
@@ -399,7 +399,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ...spice,
         ...firstDraw,
         ...skulking,
-        ...blackjack,
+        ...casino,
       });
 
       this.ctx.broadcastToRoom(
@@ -442,7 +442,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const spice = buildSpiceState();
       const firstDraw = buildFirstDrawState();
       const skulking = buildSkulkingState();
-      const blackjack = buildBlackjackState();
+      const casino = buildCasinoState();
 
       this.ctx.sendToClient(client, 'roomJoined', {
         name,
@@ -468,7 +468,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ...spice,
         ...firstDraw,
         ...skulking,
-        ...blackjack,
+        ...casino,
       });
       return;
     }
@@ -499,6 +499,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const spice = buildSpiceState();
     const firstDraw = buildFirstDrawState();
     const skulking = buildSkulkingState();
+    const casino = buildCasinoState();
 
     this.ctx.sendToClient(client, 'roomJoined', {
       name,
@@ -524,6 +525,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       ...spice,
       ...firstDraw,
       ...skulking,
+      ...casino,
     });
 
     this.ctx.broadcastToRoom(
@@ -722,11 +724,60 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.spiceHandler.handleStartGame(data, client);
     } else if (gameType === 'skulking') {
       this.skulkingHandler.handleStartGame(data, client);
-    } else if (gameType === 'blackjack') {
-      this.blackjackHandler.handleStartGame(data, client);
     } else {
       this.gangHandler.handleStartGame(data, client);
     }
+  }
+
+  // ── 카지노 전용 이벤트 ─────────────────────────────────────
+
+  @SubscribeMessage('casinoStart')
+  handleCasinoStart(
+    @MessageBody()
+    data: { roomName: string; timeLimit: number | null; initialBalance: number },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.casinoHandler.handleStart(data, client);
+  }
+
+  @SubscribeMessage('casinoBetPlace')
+  handleCasinoBetPlace(
+    @MessageBody() data: { roomName: string; amount: number },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.casinoHandler.handleBetPlace(data, client);
+  }
+
+  @SubscribeMessage('casinoResult')
+  handleCasinoResult(
+    @MessageBody() data: { roomName: string; delta: number; gameType: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.casinoHandler.handleResult(data, client);
+  }
+
+  @SubscribeMessage('casinoSwitchGame')
+  handleCasinoSwitchGame(
+    @MessageBody() data: { roomName: string; game: string | null },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.casinoHandler.handleSwitchGame(data, client);
+  }
+
+  @SubscribeMessage('casinoVoteEnd')
+  handleCasinoVoteEnd(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.casinoHandler.handleVoteEnd(data, client);
+  }
+
+  @SubscribeMessage('casinoLoan')
+  async handleCasinoLoan(
+    @ConnectedSocket() client: WebSocket,
+    @MessageBody() data: { roomName: string; amount: number },
+  ) {
+    this.casinoHandler.handleLoan(data, client);
   }
 
   @SubscribeMessage('drawCard')
@@ -877,42 +928,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: WebSocket,
   ): void {
     this.skulkingHandler.handleTestStart(data, client);
-  }
-
-  // ── 블랙잭 전용 이벤트 ────────────────────────────────────
-
-  @SubscribeMessage('bjPlaceBet')
-  handleBjPlaceBet(
-    @MessageBody() data: { roomName: string; amount: number },
-    @ConnectedSocket() client: WebSocket,
-  ): void {
-    this.blackjackHandler.handlePlaceBet(data, client);
-  }
-
-  @SubscribeMessage('bjAction')
-  handleBjAction(
-    @MessageBody()
-    data: {
-      roomName: string;
-      action: 'hit' | 'stand' | 'double' | 'split';
-      handIndex?: number;
-    },
-    @ConnectedSocket() client: WebSocket,
-  ): void {
-    this.blackjackHandler.handleAction(data, client);
-  }
-
-  @SubscribeMessage('bjNextRound')
-  handleBjNextRound(
-    @MessageBody() data: { roomName: string },
-    @ConnectedSocket() client: WebSocket,
-  ): void {
-    this.blackjackHandler.handleNextRound(data, client);
-  }
-
-  @SubscribeMessage('bjAddBot')
-  handleBjAddBot(@MessageBody() data: unknown, @ConnectedSocket() client: WebSocket) {
-    this.blackjackHandler.handleAddBot(data as { roomName: string }, client);
   }
 
   // ── 음성 통화 (WebRTC 시그널링) ───────────────────────────

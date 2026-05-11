@@ -3,10 +3,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { GameSession } from './entities/game-session.entity';
 import { GamePlayerResult } from './entities/game-player-result.entity';
+import { Admin } from './entities/admin.entity';
 
 export interface CreateSessionParams {
   roomName: string;
-  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle' | 'blackjack';
+  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle' | 'blackjack' | 'casino';
   playerCount: number;
   totalRounds?: number;
 }
@@ -44,7 +45,14 @@ export class DatabaseService {
     private readonly sessionRepo: Repository<GameSession>,
     @InjectRepository(GamePlayerResult)
     private readonly playerResultRepo: Repository<GamePlayerResult>,
+    @InjectRepository(Admin)
+    private readonly adminRepo: Repository<Admin>,
   ) {}
+
+  async isAdmin(userId: string): Promise<boolean> {
+    const count = await this.adminRepo.count({ where: { userId } });
+    return count > 0;
+  }
 
   async createSession(
     params: CreateSessionParams,
