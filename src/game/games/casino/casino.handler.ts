@@ -342,7 +342,18 @@ export class CasinoHandler {
 
   // ── finishGame ────────────────────────────────────────────────
 
-  private finishGame(roomName: string, reason: 'timer' | 'vote'): void {
+  handleForceEnd(data: { roomName: string }, _client: WebSocket): void {
+    const { roomName } = data;
+    const room = this.ctx.rooms.get(roomName);
+    if (!room || !room.gameStarted) return;
+    if (room.casinoTimer) {
+      clearTimeout(room.casinoTimer);
+      room.casinoTimer = undefined;
+    }
+    this.finishGame(roomName, 'admin');
+  }
+
+  private finishGame(roomName: string, reason: 'timer' | 'vote' | 'admin'): void {
     const room = this.ctx.rooms.get(roomName);
     if (!room || !room.gameStarted) return;
 
@@ -487,6 +498,7 @@ export class CasinoHandler {
     }
 
     return {
+      casinoStarted: true,
       casinoInitialBalance: room.casinoInitialBalance ?? 0,
       casinoTimeLimit: room.casinoTimeLimit ?? null,
       casinoElapsedSec: elapsedSec,

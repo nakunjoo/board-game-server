@@ -780,6 +780,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.casinoHandler.handleLoan(data, client);
   }
 
+  @SubscribeMessage('casinoForceEnd')
+  async handleCasinoForceEnd(
+    @ConnectedSocket() client: WebSocket,
+    @MessageBody() data: { roomName: string },
+  ) {
+    this.casinoHandler.handleForceEnd(data, client);
+  }
+
   @SubscribeMessage('drawCard')
   handleDrawCard(
     @MessageBody() data: { roomName: string },
