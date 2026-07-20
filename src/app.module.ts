@@ -1,12 +1,15 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { GameModule } from './game/game.module';
 import { ProfileModule } from './profile/profile.module';
 import { ManagerModule } from './manager/manager.module';
 import { GameTypesModule } from './game-types/game-types.module';
+import { AuthModule } from './auth/auth.module';
+import { KeepaliveModule } from './keepalive/keepalive.module';
 import { Profile } from './database/entities/profile.entity';
 import { Admin } from './database/entities/admin.entity';
 import { GameSession } from './database/entities/game-session.entity';
@@ -18,6 +21,7 @@ import { GameType } from './database/entities/game-type.entity';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
@@ -33,6 +37,8 @@ import { GameType } from './database/entities/game-type.entity';
     ProfileModule,
     ManagerModule,
     GameTypesModule,
+    AuthModule,
+    KeepaliveModule,
   ],
   controllers: [AppController],
   providers: [AppService],
