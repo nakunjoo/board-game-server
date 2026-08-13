@@ -10,6 +10,15 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-08-13 | **Gang 결과 판정 버그 수정** |
+| 2026-08-13 | `game/games/gang/gang.handler.ts`: `evaluateHand`의 "하이카드" 폴백에서 `tiebreakers`가 보드 공유 카드까지 섞인 `allSorted` 기준으로 계산되던 버그 수정 — 내 카드만(`myCardsSorted`) 기준으로 변경, 미사용 `allSorted` 변수 제거. 이 값이 `checkWinCondition`(실제 성공/실패 판정)에 직접 쓰여서, 칩 번호 순서와 족보 순서가 실제로는 맞는데도 실패로 잘못 판정되는 버그가 있었음 |
+| 2026-08-13 | **구글 로그인 제거 → 아이디/닉네임/비밀번호 회원가입 전환** |
+| 2026-08-13 | `auth/` 모듈 신규 생성 (`auth.controller.ts`, `auth.service.ts`, `auth.module.ts`) — `POST /api/auth/signup`(공개, 인증 불필요). 아이디 4~20자(영문 소문자/숫자/`_`), 닉네임 1~6자, 비밀번호 6자 이상 검증. Supabase Admin API로 `${id}@bobogang.local` 합성 이메일 계정을 `email_confirm: true`로 생성(이메일 인증 절차 생략) 후 `profiles` 테이블에 선택한 닉네임 반영. 닉네임 중복 시 `ConflictException` |
+| 2026-08-13 | `app.module.ts`: `AuthModule` 등록 |
+| 2026-08-13 | **일일 가상 회원 자동 생성 (Supabase 휴면 방지)** |
+| 2026-08-13 | `@nestjs/schedule` 추가, `app.module.ts`에 `ScheduleModule.forRoot()` 등록 |
+| 2026-08-13 | `keepalive/keepalive.service.ts` 신규 — 매일 새벽 3시(서버 시스템 시간 기준) `AuthService.signup`을 재사용해 랜덤 아이디/닉네임(접두어 1자+명사 1자+숫자 4자리, 예: "봄손1234")/비밀번호로 가상 회원 1명 자동 생성. 실패 시 최대 5회 재시도. Supabase 프로젝트가 1주일 무활동으로 일시 정지되는 것을 방지하기 위함 |
+| 2026-08-13 | **버그 발견**: `admins` 테이블에서 `granted_by` 컬럼이 (사용자가 직접) 삭제되어 있어 `GET /api/profile`이 관리자 여부 조회 시 500 에러 발생 — 모든 사용자에게 영향. `ALTER TABLE admins ADD COLUMN granted_by uuid;`로 Supabase SQL 에디터에서 직접 복구 (코드 변경 아님) |
 | 2026-05-11 | **카지노 게임 기록 데이터 보강** |
 | 2026-05-11 | `game/games/casino/casino.handler.ts`: `finishGame`에서 각 플레이어 `extra`에 `playersHistory`(전원의 playerId/nickname/history/rank 배열) 및 `myPlayerId` 추가 저장 — MyPage 차트에서 멀티플레이어 라인 표시용 |
 | 2026-05-11 | `game/games/casino/casino.handler.ts`: `finishGame`에서 대출 상환 후 최종 잔액(`finalBalance`)이 마지막 히스토리 포인트와 다를 경우 끝점 추가 — 음수 최종 잔액이 차트에 반영됨

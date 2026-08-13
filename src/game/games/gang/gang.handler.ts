@@ -1153,12 +1153,9 @@ export class GangHandler {
       [...allCards].sort(
         (a, b) => getRankValue(b.value) - getRankValue(a.value),
       )[0];
-    const allSorted = [...allCards]
-      .sort((a, b) => getRankValue(b.value) - getRankValue(a.value))
-      .slice(0, 5);
     return {
       score: HAND_SCORES['high-card'],
-      tiebreakers: allSorted.map((c) => getRankValue(c.value)),
+      tiebreakers: myCardsSorted.map((c) => getRankValue(c.value)),
       detailName: `${getValueDisplayName(highCard.value)} 하이카드`,
     };
   }
