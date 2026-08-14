@@ -431,6 +431,7 @@ export class SpiceHandler {
       trophyAwarded: trophyEvent ?? undefined,
       trophies: trophiesObj,
       wonCardCounts: wonCardCountsExp,
+      wonCards: Object.fromEntries(wonCardsMapExp),
     });
 
     // 트로피 종료: 1초 후 / 덱 소진 종료: 3초 후
@@ -691,6 +692,7 @@ export class SpiceHandler {
       trophyAwarded: trophyEvent ?? undefined,
       trophies: trophiesObj,
       wonCardCounts,
+      wonCards: Object.fromEntries(wonCardsMap),
     });
 
     // 트로피 종료: 1초 후 / 덱 소진 종료: 3초 후

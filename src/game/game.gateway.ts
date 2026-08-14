@@ -349,6 +349,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           ? Object.fromEntries(room.state.trophies)
           : {},
         wonCardCounts,
+        wonCards: Object.fromEntries(wonCardsMap),
         challengePhase,
         turnTimeLeft,
         challengeTimeLeft,

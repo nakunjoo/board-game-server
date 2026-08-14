@@ -776,8 +776,8 @@ export class GangHandler {
       gameOverResult,
     });
 
-    // DB: gameOver 시에만 최종 결과 저장 (fire-and-forget)
-    if (gameOver && room.supabaseSessionId) {
+    // DB: 라운드가 끝날 때마다 저장 (fire-and-forget) — gameOver 도달 전에 방이 끊겨도 마지막 라운드까지는 기록에 남는다
+    if (room.supabaseSessionId) {
       const sessionId = room.supabaseSessionId;
       const durationSec = room.sessionStartedAt
         ? Math.floor((Date.now() - room.sessionStartedAt) / 1000)
