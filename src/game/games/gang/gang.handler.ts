@@ -3,6 +3,7 @@ import { WebSocket } from 'ws';
 import { GameContext } from '../../game.context';
 import { GameEngineFactory } from '../../game-engine.factory';
 import { DatabaseService } from '../../../database/database.service';
+import { Room } from '../../game.types';
 
 /**
  * '더 갱' 게임 전용 이벤트 핸들러
@@ -39,47 +40,14 @@ export class GangHandler {
       return;
     }
 
-    const engine = this.engineFactory.get(room.gameType);
-    room.state.deck = engine.createDeck();
     room.gameStarted = true;
     room.gameFinished = false;
     room.lastGameResults = undefined;
     room.gameOver = false;
     room.gameOverResult = null;
-
-    room.state.openCards = [];
-    room.state.currentStep = 1;
-    room.state.playerReady = new Set();
-    room.state.nextRoundReady = new Set();
-    room.state.previousChips = new Map();
     room.state.winLossRecord = new Map();
 
-    room.state.hands.clear();
-    for (const playerClient of room.state.playerOrder) {
-      room.state.hands.set(playerClient, []);
-    }
-
-    room.state.chips = Array.from({ length: room.clients.size }, (_, i) => ({
-      number: i + 1,
-      state: 0,
-      owner: null,
-    }));
-
-    const cardsPerPlayer = (room.successCount ?? 0) >= 2 ? 3 : 2;
-    console.log(
-      `Dealing ${cardsPerPlayer} cards per player (successCount: ${room.successCount ?? 0})`,
-    );
-
-    for (let round = 0; round < cardsPerPlayer; round++) {
-      for (const playerClient of room.state.playerOrder) {
-        if (room.state.deck.length > 0) {
-          const card = room.state.deck.pop()!;
-          const hand = room.state.hands.get(playerClient) ?? [];
-          hand.push(card);
-          room.state.hands.set(playerClient, hand);
-        }
-      }
-    }
+    this.dealNewRound(room);
 
     console.log(
       `Game started in room '${roomName}' with ${room.clients.size} players`,
@@ -125,6 +93,45 @@ export class GangHandler {
         gameOverResult: room.gameOverResult,
       });
     });
+  }
+
+  // 새 라운드용 덱/손패/칩 배분 (매치 전체를 리셋하는 handleStartGame과 달리
+  // winLossRecord/DB 세션 등 매치 단위 상태는 건드리지 않는다)
+  private dealNewRound(room: Room): void {
+    const engine = this.engineFactory.get(room.gameType);
+    room.state.deck = engine.createDeck();
+    room.state.openCards = [];
+    room.state.currentStep = 1;
+    room.state.playerReady = new Set();
+    room.state.nextRoundReady = new Set();
+    room.state.previousChips = new Map();
+
+    room.state.hands.clear();
+    for (const playerClient of room.state.playerOrder) {
+      room.state.hands.set(playerClient, []);
+    }
+
+    room.state.chips = Array.from({ length: room.clients.size }, (_, i) => ({
+      number: i + 1,
+      state: 0,
+      owner: null,
+    }));
+
+    const cardsPerPlayer = (room.successCount ?? 0) >= 2 ? 3 : 2;
+    console.log(
+      `Dealing ${cardsPerPlayer} cards per player (successCount: ${room.successCount ?? 0})`,
+    );
+
+    for (let round = 0; round < cardsPerPlayer; round++) {
+      for (const playerClient of room.state.playerOrder) {
+        if (room.state.deck.length > 0) {
+          const card = room.state.deck.pop()!;
+          const hand = room.state.hands.get(playerClient) ?? [];
+          hand.push(card);
+          room.state.hands.set(playerClient, hand);
+        }
+      }
+    }
   }
 
   // ── drawCard ──────────────────────────────────────────────
@@ -310,11 +317,8 @@ export class GangHandler {
 
     if (allReady) {
       room.state.nextRoundReady.clear();
-      const savedWinLossRecord = new Map(room.state.winLossRecord);
-
-      this.handleStartGame({ roomName }, client);
-
-      room.state.winLossRecord = savedWinLossRecord;
+      room.gameFinished = false;
+      this.dealNewRound(room);
 
       room.clients.forEach((playerClient) => {
         this.ctx.sendToClient(playerClient, 'gameStarted', {
