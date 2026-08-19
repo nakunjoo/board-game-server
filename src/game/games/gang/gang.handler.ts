@@ -46,6 +46,7 @@ export class GangHandler {
     room.gameOver = false;
     room.gameOverResult = null;
     room.state.winLossRecord = new Map();
+    room.state.gangRoundHistory = [];
 
     this.dealNewRound(room);
 
@@ -737,6 +738,17 @@ export class GangHandler {
       room.state.winLossRecord.set(result.playerId, record);
     }
 
+    // 라운드별 카드 스냅샷 (마이페이지 기록 상세용) — winLossRecord와 동일하게 최대 5개까지만 보관
+    if (!room.state.gangRoundHistory) room.state.gangRoundHistory = [];
+    if (room.state.gangRoundHistory.length >= 5) room.state.gangRoundHistory.shift();
+    room.state.gangRoundHistory.push({
+      round: room.state.gangRoundHistory.length + 1,
+      openCards: room.state.openCards,
+      hands: Object.fromEntries(playerResults.map((r) => [r.playerId, r.hand])),
+      nicknames: Object.fromEntries(playerResults.map((r) => [r.playerId, r.nickname])),
+      isWinner,
+    });
+
     room.state.playerReady.clear();
 
     const sampleRecord =
@@ -801,6 +813,7 @@ export class GangHandler {
             chips: r.chips,
             gameOverResult,
             winLossRecord: room.state.winLossRecord.get(r.playerId) ?? [],
+            roundHistory: room.state.gangRoundHistory ?? [],
           },
         });
       });

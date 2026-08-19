@@ -50,6 +50,14 @@ export interface GameState {
   nextRoundReady: Set<string>; // 다음 라운드 준비 완료한 플레이어 playerId
   previousChips: Map<string, number[]>; // playerId → [chip numbers]
   winLossRecord: Map<string, boolean[]>; // playerId → [win/loss history] (최대 5개)
+  // 라운드별 카드 스냅샷 (Gang 게임) - 마이페이지 기록 상세용
+  gangRoundHistory?: {
+    round: number;
+    openCards: Card[];
+    hands: Record<string, Card[]>; // playerId → 그 라운드의 손패
+    nicknames: Record<string, string>; // playerId → 닉네임
+    isWinner: boolean;
+  }[];
   // 선뽑기 (Spice 게임)
   firstDraw?: Map<string, number>; // playerId → 뽑은 숫자
   firstDrawDone?: Set<string>; // 뽑기 완료한 playerId
