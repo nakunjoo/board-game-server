@@ -16,7 +16,7 @@ import { DatabaseService } from '../../../database/database.service';
  *   casinoResult      - 게임 결과 반영 (delta)
  *   casinoSwitchGame  - 현재 플레이 중인 게임 변경
  *   casinoVoteEnd     - 조기 종료 투표
- *   casinoLoan        - 긴급 대출 (잔액 < 초기금 5%일 때만)
+ *   casinoLoan        - 긴급 대출 (잔액이 초기금 5%와 최소 베팅액 중 큰 값 미만일 때만)
  *   casinoForceEnd    - 강제 종료 (관리자 전용)
  *
  * 서버 검증 (클라이언트를 믿지 않는 최소한의 경계):
@@ -38,6 +38,8 @@ export class CasinoHandler {
   /** 설정 모달(웹·앱)이 제공하는 선택지 — 이 외의 값은 거부 */
   static readonly ALLOWED_INITIAL_BALANCES = [1_000, 5_000, 10_000];
   static readonly ALLOWED_TIME_LIMITS = [5 * 60, 10 * 60]; // 초
+  /** 미니게임 베팅액이 100 단위라, 이보다 잔액이 적으면 어떤 게임도 시작할 수 없다 */
+  static readonly MIN_BET = 100;
 
   /**
    * 미니게임별 최대 총수령 배수 (원금 포함, 베팅액 대비).
@@ -104,6 +106,7 @@ export class CasinoHandler {
     room.gameFinished = false;
     room.gameOver = false;
     room.gameOverResult = null;
+    room.casinoLastResult = undefined;
 
     const now = Date.now();
     room.sessionStartedAt = now;
@@ -189,7 +192,7 @@ export class CasinoHandler {
     if (timeLimit !== null && timeLimit > 0) {
       const ms = timeLimit * 1000;
       room.casinoTimer = setTimeout(() => {
-        this.finishGame(roomName, 'timer');
+        if (this.ctx.rooms.get(roomName) === room) this.finishGame(roomName, 'timer');
       }, ms);
     }
   }
@@ -396,10 +399,11 @@ export class CasinoHandler {
       return;
     }
 
-    // 긴급 대출은 잔액이 초기금의 5% 미만일 때만 (웹·앱 대출 배너 노출 조건과 동일).
+    // 긴급 대출은 잔액이 적을 때만 (웹 대출 배너 노출 조건과 동일).
     // 이 조건이 없으면 호출을 반복해 한도 없이 빌릴 수 있었다.
+    // 최소 베팅액 미만이면 초기금 5%를 넘어도 게임을 못 하므로 대출을 열어 둔다.
     const currentBalance = room.state.casinoBalances.get(playerId) ?? 0;
-    if (currentBalance >= initialBalance * 0.05) {
+    if (currentBalance >= Math.max(initialBalance * 0.05, CasinoHandler.MIN_BET)) {
       this.ctx.sendToClient(client, 'error', { message: '잔액이 충분해 대출을 받을 수 없습니다' });
       return;
     }
@@ -460,6 +464,14 @@ export class CasinoHandler {
     if (!room || !room.gameStarted) return;
 
     const initialBalance = room.casinoInitialBalance ?? 0;
+
+    // 종료 시점에 결과가 오지 않은 판은 무효로 보고 베팅금을 돌려준다
+    room.state.casinoPendingStakes?.forEach((stake, pid) => {
+      if (stake > 0) {
+        room.state.casinoBalances?.set(pid, (room.state.casinoBalances.get(pid) ?? 0) + stake);
+      }
+    });
+    room.state.casinoPendingStakes = undefined;
 
     const playerList: {
       playerId: string;
@@ -526,11 +538,9 @@ export class CasinoHandler {
           .join(' | '),
     );
 
-    this.ctx.broadcastToRoom(roomName, 'casinoGameOver', {
-      roomName,
-      reason,
-      players: playerList,
-    });
+    const gameOverResult = { roomName, reason, players: playerList };
+    room.casinoLastResult = gameOverResult;
+    this.ctx.broadcastToRoom(roomName, 'casinoGameOver', gameOverResult);
 
     // DB: 결과 저장 (fire-and-forget)
     if (room.supabaseSessionId) {
@@ -582,11 +592,23 @@ export class CasinoHandler {
     room.state.casinoLoans = undefined;
   }
 
+  // ── 플레이어 이탈 ─────────────────────────────────────────────
+
+  handlePlayerLeft(room: Room, playerId: string): void {
+    room.state.casinoVotes?.delete(playerId);
+    // 방이 없어지면 시간 제한 타이머도 함께 끝낸다
+    if (room.clients.size === 0 && room.casinoTimer) {
+      clearTimeout(room.casinoTimer);
+      room.casinoTimer = undefined;
+    }
+  }
+
   // ── buildCasinoState (재연결용) ───────────────────────────────
 
   buildCasinoState(room: Room, playerId: string): Record<string, unknown> {
-    if (room.gameType !== 'casino' || !room.gameStarted || !room.state.casinoBalances) {
-      return {};
+    if (room.gameType !== 'casino') return {};
+    if (!room.gameStarted || !room.state.casinoBalances) {
+      return room.casinoLastResult ? { casinoLastResult: room.casinoLastResult } : {};
     }
 
     const players: {

@@ -62,6 +62,7 @@ export interface GameState {
   firstDraw?: Map<string, number>; // playerId → 뽑은 숫자
   firstDrawDone?: Set<string>; // 뽑기 완료한 playerId
   firstDrawPool?: number[]; // 남은 숫자 풀 (1~10 셔플)
+  firstDrawTimer?: ReturnType<typeof setTimeout>; // 안 뽑은 사람 자동 뽑기
   // 턴 관리 (Spice 게임)
   currentTurnPlayerId?: string; // 현재 턴인 playerId
   turnStartedAt?: number | null; // 현재 턴 시작 시각 (ms, 재연결 시 남은 시간 계산용)
@@ -89,6 +90,8 @@ export interface GameState {
   skulkingFirstDraw?: Map<string, number>; // playerId → 뽑은 숫자
   skulkingFirstDrawDone?: Set<string>; // 뽑기 완료한 playerId
   skulkingFirstDrawPool?: number[]; // 남은 숫자 풀 (1~10 셔플)
+  skulkingFirstDrawTimer?: ReturnType<typeof setTimeout>; // 안 뽑은 사람 자동 뽑기
+  skulkingNextRoundTimer?: ReturnType<typeof setTimeout>; // 라운드 결과 후 다음 라운드 시작
 
   // 스컬킹 게임 전용
   skulkingRound?: number; // 현재 라운드 (1~10)
@@ -164,4 +167,13 @@ export interface Room {
   casinoTimeLimit?: number | null; // 카지노: 시간 제한 (분, null=무제한)
   casinoStartedAt?: number; // 카지노: 게임 시작 타임스탬프 (ms)
   casinoTimer?: ReturnType<typeof setTimeout>; // 카지노: 타임리밋 타이머
+  // 게임 종료 후 재연결·새로고침한 사람에게 결과를 다시 보여주기 위한 값
+  spiceGameOverMeta?: {
+    reason: 'trophy' | 'deck' | 'playerLeft';
+    winnerIds: string[];
+    winnerNicknames: string[];
+    maxScore: number;
+  };
+  skulkingGameOverResult?: unknown;
+  casinoLastResult?: unknown;
 }

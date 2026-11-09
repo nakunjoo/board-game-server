@@ -2,11 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { GameContext } from '../../game.context';
 import { GameEngineFactory } from '../../game-engine.factory';
-import { Card } from '../../game.types';
+import { Card, Room } from '../../game.types';
 import { DatabaseService } from '../../../database/database.service';
 
 const TOTAL_ROUNDS = 10;
 const GAME_OVER_DELAY_MS = 5000; // 마지막 라운드 결과를 보여주는 시간
+const NEXT_ROUND_DELAY_MS = 8000; // 라운드 결과와 카운트다운을 보여주는 시간
+const FIRST_DRAW_TIME_MS = 20000; // 선뽑기 제한 시간 (지나면 서버가 대신 뽑는다)
 const SPECIAL_TYPES = ['sk-escape', 'sk-pirate', 'sk-mermaid', 'sk-skulking', 'sk-tigress'];
 
 @Injectable()
@@ -59,11 +61,22 @@ export class SkulkingHandler {
     room.gameStarted = true;
     room.gameFinished = false;
     room.gameOver = false;
+    room.skulkingGameOverResult = undefined;
 
     this.ctx.broadcastToRoom(roomName, 'skulkingFirstDrawStarted', {
       roomName,
       players: this.ctx.getPlayersWithOrder(room),
     });
+
+    room.state.skulkingFirstDrawTimer = setTimeout(() => {
+      if (this.ctx.rooms.get(roomName) !== room || !room.state.skulkingFirstDrawPool) return;
+      room.clients.forEach((c) => {
+        const pid = room.playerIds.get(c);
+        if (pid && !room.state.skulkingFirstDrawDone?.has(pid)) {
+          this.handleFirstDraw({ roomName }, c);
+        }
+      });
+    }, FIRST_DRAW_TIME_MS);
   }
 
   // ── 선뽑기 카드 뽑기 ────────────────────────────────────────
@@ -101,33 +114,142 @@ export class SkulkingHandler {
       totalCount,
     });
 
-    // 모두 뽑았으면 결과 발표 후 게임 시작
-    if (drawnCount === totalCount) {
-      let maxNumber = -1;
-      let firstPlayerId = '';
-      room.state.skulkingFirstDraw.forEach((num, pid) => {
-        if (num > maxNumber) {
-          maxNumber = num;
-          firstPlayerId = pid;
-        }
-      });
+    this.finishFirstDrawIfDone(roomName, room);
+  }
 
-      const firstDrawResults: Record<string, number> = {};
-      room.state.skulkingFirstDraw.forEach((num, pid) => {
-        firstDrawResults[pid] = num;
-      });
-
-      this.ctx.broadcastToRoom(roomName, 'skulkingFirstDrawFinished', {
-        roomName,
-        results: firstDrawResults,
-        firstPlayerId,
-        firstNickname: this.ctx.getNicknameByPlayerId(room, firstPlayerId),
-      });
-
-      setTimeout(() => {
-        this.startMainGame(roomName, firstPlayerId);
-      }, 2000);
+  /** 남은 인원이 모두 뽑았으면 결과를 발표하고 본 게임을 예약한다 */
+  private finishFirstDrawIfDone(roomName: string, room: Room): void {
+    const { skulkingFirstDraw, skulkingFirstDrawDone } = room.state;
+    if (
+      !skulkingFirstDraw ||
+      room.clients.size === 0 ||
+      skulkingFirstDrawDone?.size !== room.clients.size
+    ) {
+      return;
     }
+
+    this.clearFirstDrawTimer(room);
+    room.state.skulkingFirstDrawPool = undefined; // 2초 대기 중 이탈로 다시 발표되지 않게 닫는다
+
+    let maxNumber = -1;
+    let firstPlayerId = '';
+    skulkingFirstDraw.forEach((num, pid) => {
+      if (num > maxNumber) {
+        maxNumber = num;
+        firstPlayerId = pid;
+      }
+    });
+
+    const firstDrawResults: Record<string, number> = {};
+    skulkingFirstDraw.forEach((num, pid) => {
+      firstDrawResults[pid] = num;
+    });
+
+    this.ctx.broadcastToRoom(roomName, 'skulkingFirstDrawFinished', {
+      roomName,
+      results: firstDrawResults,
+      firstPlayerId,
+      firstNickname: this.ctx.getNicknameByPlayerId(room, firstPlayerId),
+    });
+
+    setTimeout(() => {
+      if (this.ctx.rooms.get(roomName) === room) this.startMainGame(roomName, firstPlayerId);
+    }, 2000);
+  }
+
+  private clearFirstDrawTimer(room: Room): void {
+    if (room.state.skulkingFirstDrawTimer) {
+      clearTimeout(room.state.skulkingFirstDrawTimer);
+      room.state.skulkingFirstDrawTimer = undefined;
+    }
+  }
+
+  private clearNextRoundTimer(room: Room): void {
+    if (room.state.skulkingNextRoundTimer) {
+      clearTimeout(room.state.skulkingNextRoundTimer);
+      room.state.skulkingNextRoundTimer = undefined;
+    }
+  }
+
+  // ── 플레이어 이탈 ─────────────────────────────────────────
+
+  handlePlayerLeft(room: Room, playerId: string): void {
+    const roomName = room.name;
+
+    if (room.clients.size === 0) {
+      this.clearFirstDrawTimer(room);
+      this.clearNextRoundTimer(room);
+      this.clearBidTimer(room);
+      this.clearPlayTimer(room);
+      return;
+    }
+
+    if (room.state.skulkingFirstDrawPool) {
+      room.state.skulkingFirstDraw?.delete(playerId);
+      room.state.skulkingFirstDrawDone?.delete(playerId);
+      this.ctx.broadcastToRoom(roomName, 'skulkingFirstDrawProgress', {
+        roomName,
+        drawnCount: room.state.skulkingFirstDrawDone?.size ?? 0,
+        totalCount: room.clients.size,
+      });
+      this.finishFirstDrawIfDone(roomName, room);
+      return;
+    }
+
+    if (!room.gameStarted || !room.state.skulkingRound) return;
+
+    // 혼자 남으면 트릭 승부가 성립하지 않으므로 현재 점수로 끝낸다
+    if (room.clients.size === 1) {
+      this.endGame(roomName);
+      return;
+    }
+
+    if (room.state.skulkingPhase === 'bid') {
+      room.state.bids!.delete(playerId);
+      const bidCount = room.state.bids!.size;
+      this.ctx.broadcastToRoom(roomName, 'skulkingBidUpdate', {
+        bids: Object.fromEntries(room.state.bids!),
+        bidCount,
+        totalPlayers: room.clients.size,
+      });
+      if (bidCount >= room.clients.size) this.startPlayPhase(roomName);
+      return;
+    }
+
+    if (room.state.skulkingPhase === 'play') this.removeFromTrick(roomName, room, playerId);
+  }
+
+  /** 나간 사람을 트릭 순서에서 빼고, 그 사람 차례였으면 다음 사람으로 넘기거나 트릭을 끝낸다 */
+  private removeFromTrick(roomName: string, room: Room, playerId: string): void {
+    const order = room.state.skulkingTrickOrder;
+    // 트릭 완료 후 다음 트릭을 기다리는 동안은 새 순서를 만들 때 자연히 빠진다
+    if (!order || !room.state.skulkingCurrentPlayerId) return;
+    const leftIndex = order.indexOf(playerId);
+    if (leftIndex === -1) return;
+
+    order.splice(leftIndex, 1);
+    const turnIndex = room.state.skulkingTrickIndex ?? 0;
+
+    if (leftIndex < turnIndex) {
+      room.state.skulkingTrickIndex = turnIndex - 1;
+      return;
+    }
+    if (leftIndex > turnIndex) return;
+
+    this.clearPlayTimer(room);
+    if (turnIndex >= order.length) {
+      this.resolveTrick(roomName);
+      return;
+    }
+
+    const nextPlayerId = order[turnIndex];
+    room.state.skulkingCurrentPlayerId = nextPlayerId;
+    this.ctx.broadcastToRoom(roomName, 'skulkingTurnUpdate', {
+      currentPlayerId: nextPlayerId,
+      currentNickname: this.ctx.getNicknameByPlayerId(room, nextPlayerId),
+      isNewTrick: false,
+    });
+    this.startPlayTimer(room);
   }
 
   // ── 본 게임 시작 ────────────────────────────────────────────
@@ -246,7 +368,7 @@ export class SkulkingHandler {
     }
 
     const round = room.state.skulkingRound!;
-    if (bid < 0 || bid > round) {
+    if (!Number.isInteger(bid) || bid < 0 || bid > round) {
       this.ctx.sendToClient(client, 'error', { message: `비드는 0~${round} 사이여야 합니다` });
       return;
     }
@@ -293,8 +415,6 @@ export class SkulkingHandler {
       return;
     }
 
-    this.clearPlayTimer(room);
-
     const playerId = room.playerIds.get(client)!;
     if (playerId !== room.state.skulkingCurrentPlayerId) {
       this.ctx.sendToClient(client, 'error', { message: '지금 카드 낼 차례가 아닙니다' });
@@ -302,13 +422,17 @@ export class SkulkingHandler {
     }
 
     const hand = room.state.hands.get(client) ?? [];
-    if (cardIndex < 0 || cardIndex >= hand.length) {
+    if (!Number.isInteger(cardIndex) || cardIndex < 0 || cardIndex >= hand.length) {
       this.ctx.sendToClient(client, 'error', { message: '유효하지 않은 카드 인덱스입니다' });
       return;
     }
 
     // Tigress는 선언 필수
-    if (hand[cardIndex].type === 'sk-tigress' && !tigressDeclared) {
+    if (
+      hand[cardIndex].type === 'sk-tigress' &&
+      tigressDeclared !== 'escape' &&
+      tigressDeclared !== 'pirate'
+    ) {
       this.ctx.sendToClient(client, 'error', { message: 'Tigress 카드는 escape 또는 pirate로 선언해야 합니다' });
       return;
     }
@@ -333,6 +457,9 @@ export class SkulkingHandler {
         }
       }
     }
+
+    // 거부된 요청이 현재 턴의 자동 제출을 없애지 않도록 검증을 모두 통과한 뒤에 해제한다
+    this.clearPlayTimer(room);
 
     // 카드 제거
     const card = hand.splice(cardIndex, 1)[0];
@@ -391,8 +518,15 @@ export class SkulkingHandler {
 
     const playerId = room.playerIds.get(client)!;
 
-    // 방장이 요청하면 즉시 진행
-    if (playerId !== room.hostPlayerId) return;
+    // 방장이 요청하면 즉시 진행. 진행 중인 라운드를 건너뛸 수 없게 라운드 사이에만 받는다
+    if (playerId !== room.hostPlayerId || !room.gameStarted || room.state.skulkingPhase) return;
+
+    this.advanceRound(roomName);
+  }
+
+  private advanceRound(roomName: string): void {
+    const room = this.ctx.rooms.get(roomName)!;
+    this.clearNextRoundTimer(room);
 
     const nextRound = (room.state.skulkingRound ?? 0) + 1;
 
@@ -477,8 +611,8 @@ export class SkulkingHandler {
 
     // 첫 라운드 첫 트릭: playerOrder[0]이 리드
     const playerIds = this.getPlayerIds(room);
-    const leadPlayerId = room.state.skulkingLeadPlayerId ?? playerIds[0];
-    this.startTrick(room, leadPlayerId);
+    this.startTrick(room, room.state.skulkingLeadPlayerId ?? playerIds[0]);
+    const leadPlayerId = room.state.skulkingCurrentPlayerId!;
 
     this.ctx.broadcastToRoom(roomName, 'skulkingPlayPhase', {
       leadPlayerId,
@@ -491,12 +625,13 @@ export class SkulkingHandler {
   private startTrick(room: ReturnType<typeof this.ctx.rooms.get> & object, leadPlayerId: string): void {
     room.state.currentTrick = [];
     const playerIds = this.getPlayerIds(room);
-    const leadIndex = playerIds.indexOf(leadPlayerId);
+    // 지정된 선이 그 사이 나갔으면 첫 번째 사람이 이어받는다
+    const leadIndex = Math.max(playerIds.indexOf(leadPlayerId), 0);
     const trickOrder = [
       ...playerIds.slice(leadIndex),
       ...playerIds.slice(0, leadIndex),
     ];
-    room.state.skulkingLeadPlayerId = leadPlayerId;
+    room.state.skulkingLeadPlayerId = trickOrder[0];
     room.state.skulkingTrickOrder = trickOrder;
     room.state.skulkingTrickIndex = 0;
     room.state.skulkingCurrentPlayerId = trickOrder[0];
@@ -566,6 +701,9 @@ export class SkulkingHandler {
     const room = this.ctx.rooms.get(roomName)!;
     const currentTrick = room.state.currentTrick!;
 
+    // 다음 트릭이 시작되기 전에 같은 트릭에 카드가 더 들어오지 않게 차례를 닫는다
+    room.state.skulkingCurrentPlayerId = undefined;
+
     const winnerId = this.determineTrickWinner(currentTrick);
     const winnerNickname = this.ctx.getNicknameByPlayerId(room, winnerId);
 
@@ -606,10 +744,12 @@ export class SkulkingHandler {
     } else {
       // 다음 트릭: 이긴 플레이어가 리드
       setTimeout(() => {
+        if (this.ctx.rooms.get(roomName) !== room || room.state.skulkingPhase !== 'play') return;
         this.startTrick(room, winnerId);
+        const leadPlayerId = room.state.skulkingCurrentPlayerId!;
         this.ctx.broadcastToRoom(roomName, 'skulkingTurnUpdate', {
-          currentPlayerId: winnerId,
-          currentNickname: winnerNickname,
+          currentPlayerId: leadPlayerId,
+          currentNickname: this.ctx.getNicknameByPlayerId(room, leadPlayerId),
           isNewTrick: true,
           trickOrder: room.state.skulkingTrickOrder ?? [],
         });
@@ -678,6 +818,13 @@ export class SkulkingHandler {
       setTimeout(() => {
         if (this.ctx.rooms.get(roomName) === room) this.endGame(roomName);
       }, GAME_OVER_DELAY_MS);
+    } else {
+      // 방장 브라우저에 맡기면 방장이 나가거나 새로고침할 때 게임이 멈춘다
+      room.state.skulkingNextRoundTimer = setTimeout(() => {
+        if (this.ctx.rooms.get(roomName) === room && room.gameStarted && !room.state.skulkingPhase) {
+          this.advanceRound(roomName);
+        }
+      }, NEXT_ROUND_DELAY_MS);
     }
   }
 
@@ -724,6 +871,11 @@ export class SkulkingHandler {
   private endGame(roomName: string): void {
     const room = this.ctx.rooms.get(roomName)!;
     if (room.gameFinished) return;
+    this.clearNextRoundTimer(room);
+    this.clearBidTimer(room);
+    this.clearPlayTimer(room);
+    room.state.skulkingPhase = undefined;
+    room.state.skulkingCurrentPlayerId = undefined;
     room.gameStarted = false;
     room.gameFinished = true;
     room.gameOver = true;
@@ -740,11 +892,13 @@ export class SkulkingHandler {
       .sort((a, b) => b.score - a.score)
       .map((p, i) => ({ ...p, rank: i + 1 }));
 
-    this.ctx.broadcastToRoom(roomName, 'skulkingGameOver', {
+    const gameOverResult = {
       finalScores: Object.fromEntries(scores),
       ranking,
       roundScoreHistory: Object.fromEntries(room.state.roundScores!),
-    });
+    };
+    room.skulkingGameOverResult = gameOverResult;
+    this.ctx.broadcastToRoom(roomName, 'skulkingGameOver', gameOverResult);
 
     // DB: 결과 저장 (fire-and-forget)
     if (room.supabaseSessionId) {
@@ -981,6 +1135,10 @@ export class SkulkingHandler {
   // ── 재연결 상태 빌드 ─────────────────────────────────────
 
   buildSkulkingState(room: ReturnType<typeof this.ctx.rooms.get> & object) {
+    if (!room.gameStarted && room.skulkingGameOverResult) {
+      return { skulkingGameOverResult: room.skulkingGameOverResult };
+    }
+
     // 선뽑기 단계 재연결
     if (room.state.skulkingFirstDraw !== undefined || room.state.skulkingFirstDrawDone !== undefined) {
       return {

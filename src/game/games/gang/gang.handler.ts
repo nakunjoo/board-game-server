@@ -31,6 +31,11 @@ export class GangHandler {
     }
 
     const playerId = room.playerIds.get(client);
+    if (playerId !== room.hostPlayerId) {
+      this.ctx.sendToClient(client, 'error', { message: '방장만 게임을 시작할 수 있습니다' });
+      return;
+    }
+
     const adminBypass = playerId ? await this.supabase.isAdmin(playerId) : false;
 
     if (!adminBypass && room.clients.size < 3) {
@@ -40,8 +45,15 @@ export class GangHandler {
       return;
     }
 
+    // await 사이에 같은 요청이 먼저 처리됐을 수 있어 여기서 확인한다
+    if (room.gameStarted) {
+      this.ctx.sendToClient(client, 'error', { message: '이미 게임이 진행 중입니다' });
+      return;
+    }
+
     room.gameStarted = true;
     room.gameFinished = false;
+    room.successCount = 0;
     room.lastGameResults = undefined;
     room.gameOver = false;
     room.gameOverResult = null;
@@ -84,7 +96,7 @@ export class GangHandler {
     room.clients.forEach((playerClient) => {
       this.ctx.sendToClient(playerClient, 'gameStarted', {
         roomName,
-        deck: room.state.deck,
+        deck: this.ctx.hiddenDeck(room),
         myHand: room.state.hands.get(playerClient) ?? [],
         playerHands: this.ctx.getPlayerHands(room),
         openCards: room.state.openCards,
@@ -148,6 +160,8 @@ export class GangHandler {
       return;
     }
 
+    if (!this.isDebugAllowed(room)) return;
+
     const engine = this.engineFactory.get(room.gameType);
 
     try {
@@ -158,7 +172,7 @@ export class GangHandler {
       this.ctx.broadcastToRoom(roomName, 'cardDrawn', {
         roomName,
         card: result.card,
-        deck: room.state.deck,
+        deck: this.ctx.hiddenDeck(room),
         playerNickname: targetNickname,
         playerHands: this.ctx.getPlayerHands(room),
       });
@@ -184,6 +198,8 @@ export class GangHandler {
       });
       return;
     }
+
+    if (!room.gameStarted || room.gameFinished) return;
 
     const playerId = room.playerIds.get(client);
     if (!playerId) return;
@@ -260,6 +276,8 @@ export class GangHandler {
       return;
     }
 
+    if (!room.gameStarted || room.gameFinished) return;
+
     const playerId = room.playerIds.get(client);
     if (!playerId) return;
 
@@ -302,12 +320,15 @@ export class GangHandler {
     const playerId = room.playerIds.get(client);
     if (!playerId) return;
 
-    if (!room.gameStarted) return;
+    if (!room.gameStarted || !room.gameFinished) return;
 
-    if (!room.state.nextRoundReady.has(playerId)) {
-      room.state.nextRoundReady.add(playerId);
-    }
+    room.state.nextRoundReady.add(playerId);
+    this.reconcileNextRoundReady(room);
+  }
 
+  /** 다음 라운드 준비 현황을 알리고, 전원 준비면 새 라운드를 시작한다 */
+  private reconcileNextRoundReady(room: Room): void {
+    const roomName = room.name;
     const allReady = room.clients.size === room.state.nextRoundReady.size;
 
     this.ctx.broadcastToRoom(roomName, 'nextRoundReadyUpdate', {
@@ -316,25 +337,65 @@ export class GangHandler {
       allReady,
     });
 
-    if (allReady) {
-      room.state.nextRoundReady.clear();
-      room.gameFinished = false;
-      this.dealNewRound(room);
+    if (!allReady) return;
 
-      room.clients.forEach((playerClient) => {
-        this.ctx.sendToClient(playerClient, 'gameStarted', {
-          roomName,
-          deck: room.state.deck,
-          myHand: room.state.hands.get(playerClient) ?? [],
-          playerHands: this.ctx.getPlayerHands(room),
-          openCards: room.state.openCards,
-          chips: room.state.chips,
-          winLossRecord: Object.fromEntries(room.state.winLossRecord),
-          gameOver: room.gameOver,
-          gameOverResult: room.gameOverResult,
-        });
+    room.state.nextRoundReady.clear();
+    room.gameFinished = false;
+    this.dealNewRound(room);
+
+    room.clients.forEach((playerClient) => {
+      this.ctx.sendToClient(playerClient, 'gameStarted', {
+        roomName,
+        deck: this.ctx.hiddenDeck(room),
+        myHand: room.state.hands.get(playerClient) ?? [],
+        playerHands: this.ctx.getPlayerHands(room),
+        openCards: room.state.openCards,
+        chips: room.state.chips,
+        winLossRecord: Object.fromEntries(room.state.winLossRecord),
+        gameOver: room.gameOver,
+        gameOverResult: room.gameOverResult,
+      });
+    });
+  }
+
+  // ── 플레이어 이탈 ─────────────────────────────────────────
+
+  /** 나간 사람을 준비 집계와 칩에서 빼고, 그 사람만 기다리던 단계가 있으면 진행한다 */
+  handlePlayerLeft(room: Room, playerId: string): void {
+    if (room.clients.size === 0) return;
+
+    room.state.playerReady.delete(playerId);
+    room.state.nextRoundReady.delete(playerId);
+    const heldChip = room.state.chips.find((c) => c.owner === playerId);
+    if (heldChip) heldChip.owner = null;
+
+    if (!room.gameStarted) return;
+
+    if (room.gameFinished) {
+      this.reconcileNextRoundReady(room);
+      return;
+    }
+
+    if (heldChip) {
+      this.ctx.broadcastToRoom(room.name, 'chipSelected', {
+        roomName: room.name,
+        chips: room.state.chips,
+        readyPlayers: Array.from(room.state.playerReady),
       });
     }
+
+    const allReady = room.clients.size === room.state.playerReady.size;
+    this.ctx.broadcastToRoom(room.name, 'playerReadyUpdate', {
+      roomName: room.name,
+      readyPlayers: Array.from(room.state.playerReady),
+      allReady,
+    });
+    if (allReady) this.proceedToNextStep(room.name);
+  }
+
+  /** 디버그 이벤트는 개발 환경의 갱스터 방에서만 받는다 (운영에서는 승패 조작이 된다) */
+  private isDebugAllowed(room: Room): boolean {
+    return process.env.NODE_ENV === 'development' && room.gameType === 'gang';
   }
 
   // ── testSuccess ───────────────────────────────────────────
@@ -344,7 +405,7 @@ export class GangHandler {
     const room = this.ctx.rooms.get(roomName);
 
     if (!room || !room.clients.has(client)) return;
-    if (!room.gameStarted) return;
+    if (!room.gameStarted || !this.isDebugAllowed(room)) return;
 
     const baseUrl = GameContext.CARD_IMAGE_BASE_URL;
 
@@ -506,7 +567,7 @@ export class GangHandler {
     const room = this.ctx.rooms.get(roomName);
 
     if (!room || !room.clients.has(client)) return;
-    if (!room.gameStarted) return;
+    if (!room.gameStarted || !this.isDebugAllowed(room)) return;
 
     const baseUrl = GameContext.CARD_IMAGE_BASE_URL;
 
@@ -715,7 +776,7 @@ export class GangHandler {
       currentStep: room.state.currentStep,
       openCards: room.state.openCards,
       chips: room.state.chips,
-      deck: room.state.deck,
+      deck: this.ctx.hiddenDeck(room),
       previousChips: Object.fromEntries(room.state.previousChips),
     });
   }
@@ -936,32 +997,24 @@ export class GangHandler {
       return counts;
     };
 
-    const isStraight = (cards: any[]): boolean => {
-      if (cards.length < 5) return false;
-      const sorted = [...cards].sort(
-        (a, b) => getRankValue(a.value) - getRankValue(b.value),
-      );
-      for (let i = 0; i <= sorted.length - 5; i++) {
+    // 같은 숫자는 하나로 보고 가장 높은 5연속의 탑을 찾는다 (A는 14이자 백스트레이트의 1)
+    const getStraightTop = (cards: any[]): number | null => {
+      const ranks = new Set<number>(cards.map((c) => getRankValue(c.value)));
+      if (ranks.has(14)) ranks.add(1);
+      for (let top = 14; top >= 5; top--) {
         let ok = true;
-        for (let j = 0; j < 4; j++) {
-          if (
-            getRankValue(sorted[i + j + 1].value) !==
-            getRankValue(sorted[i + j].value) + 1
-          ) {
+        for (let rank = top; rank > top - 5; rank--) {
+          if (!ranks.has(rank)) {
             ok = false;
             break;
           }
         }
-        if (ok) return true;
+        if (ok) return top;
       }
-      return (
-        sorted.some((c) => c.value === 1) &&
-        sorted.some((c) => c.value === 2) &&
-        sorted.some((c) => c.value === 3) &&
-        sorted.some((c) => c.value === 4) &&
-        sorted.some((c) => c.value === 5)
-      );
+      return null;
     };
+
+    const isStraight = (cards: any[]): boolean => getStraightTop(cards) !== null;
 
     const isFlush = (cards: any[]): boolean => {
       const suitCounts = countSuits(cards);
@@ -983,19 +1036,14 @@ export class GangHandler {
       const suitCounts = countSuits(allCards);
       for (const suitCards of suitCounts.values()) {
         if (suitCards.length >= 5 && isStraight(suitCards)) {
-          const values = suitCards
-            .map((c) => c.value)
-            .sort((a: number, b: number) => a - b);
-          if (values.join(',').includes('1,10,11,12,13')) {
+          const sfTop = getStraightTop(suitCards)!;
+          if (sfTop === 14) {
             return {
               score: HAND_SCORES['royal-straight-flush'],
               tiebreakers: [14],
               detailName: '10-J-Q-K-A 로얄 스트레이트 플러시',
             };
           }
-          const sfTop = Math.max(
-            ...suitCards.map((c) => getRankValue(c.value)),
-          );
           return {
             score: HAND_SCORES['straight-flush'],
             tiebreakers: [sfTop],
@@ -1052,12 +1100,7 @@ export class GangHandler {
     }
 
     if (isStraight(allCards)) {
-      const hasAce = allCards.some((c) => c.value === 1);
-      const has5 = allCards.some((c) => c.value === 5);
-      const isBackStraight = hasAce && has5;
-      const topValue = isBackStraight
-        ? 5
-        : Math.max(...allCards.map((c) => getRankValue(c.value)));
+      const topValue = getStraightTop(allCards)!;
       return {
         score: HAND_SCORES['straight'],
         tiebreakers: [topValue],

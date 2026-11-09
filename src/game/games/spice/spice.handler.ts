@@ -15,6 +15,10 @@ export class SpiceHandler {
   static readonly CHALLENGE_TIME_MS = 5000;
   /** 턴 제한시간. 초과 시 서버가 자동 패스한다. */
   static readonly TURN_TIME_MS = 30000;
+  private static readonly FIRST_DRAW_TIME_MS = 20000;
+  /** 클라이언트가 도전 결과를 보여주는 시간. 이 동안은 조작할 수 없어 턴 시계에서 뺀다 */
+  private static readonly CHALLENGE_RESULT_DISPLAY_MS = 3000;
+  private static readonly DECLARABLE_SUITS = ['pepper', 'cinnamon', 'saffron'];
   /**
    * 자동 패스는 턴 제한시간 + 이만큼 뒤에 실행한다.
    * 클라이언트가 0초를 보여준 직후 바로 턴이 넘어가 보이지 않도록 하는 여유분.
@@ -48,6 +52,11 @@ export class SpiceHandler {
       return;
     }
 
+    if (room.gameStarted || room.state.firstDraw) {
+      this.ctx.sendToClient(client, 'error', { message: '이미 게임이 진행 중입니다' });
+      return;
+    }
+
     // 선뽑기 시작: 1~10 중 랜덤 카드 배정
     room.state.firstDraw = new Map(); // playerId → 뽑은 숫자
     room.state.firstDrawDone = new Set(); // 뽑기 완료한 playerId
@@ -68,6 +77,24 @@ export class SpiceHandler {
       roomName,
       players: this.ctx.getPlayersWithOrder(room),
     });
+
+    // 접속한 채 안 뽑는 사람이 있어도 판이 멈추지 않게 서버가 대신 뽑는다
+    room.state.firstDrawTimer = setTimeout(() => {
+      if (this.ctx.rooms.get(roomName) !== room || !room.state.firstDrawPool) return;
+      room.clients.forEach((c) => {
+        const pid = room.playerIds.get(c);
+        if (pid && !room.state.firstDrawDone?.has(pid)) {
+          this.handleDrawFirstCard({ roomName }, c);
+        }
+      });
+    }, SpiceHandler.FIRST_DRAW_TIME_MS);
+  }
+
+  private clearFirstDrawTimer(room: Room): void {
+    if (room.state.firstDrawTimer) {
+      clearTimeout(room.state.firstDrawTimer);
+      room.state.firstDrawTimer = undefined;
+    }
   }
 
   // ── drawFirstCard ──────────────────────────────────────────
@@ -113,49 +140,68 @@ export class SpiceHandler {
       totalCount: room.clients.size,
     });
 
-    // 모두 뽑았으면 결과 발표 후 게임 시작
-    if (room.state.firstDrawDone!.size === room.clients.size) {
-      // 가장 높은 숫자를 뽑은 플레이어가 선
-      let maxNumber = -1;
-      let firstPlayerId = '';
-      room.state.firstDraw.forEach((num, pid) => {
-        if (num > maxNumber) {
-          maxNumber = num;
-          firstPlayerId = pid;
-        }
-      });
+    this.finishFirstDrawIfDone(roomName, room);
+  }
 
-      const firstDrawResults: Record<string, number> = {};
-      room.state.firstDraw.forEach((num, pid) => {
-        firstDrawResults[pid] = num;
-      });
-
-      const firstNickname = this.ctx.getNicknameByPlayerId(room, firstPlayerId);
-
-      console.log(
-        `[Spice] First draw result in room '${roomName}': ${firstNickname} (${firstPlayerId}) goes first with ${maxNumber}`,
-      );
-
-      this.ctx.broadcastToRoom(roomName, 'firstDrawFinished', {
-        roomName,
-        results: firstDrawResults,
-        firstPlayerId,
-        firstNickname,
-      });
-
-      // 잠시 후 본 게임 시작
-      setTimeout(() => {
-        this.startMainGame(roomName, firstPlayerId);
-      }, 2000);
+  /** 남은 인원이 모두 뽑았으면 결과를 발표하고 본 게임을 예약한다 */
+  private finishFirstDrawIfDone(roomName: string, room: Room): void {
+    if (
+      !room.state.firstDraw ||
+      room.clients.size === 0 ||
+      room.state.firstDrawDone!.size !== room.clients.size
+    ) {
+      return;
     }
+
+    this.clearFirstDrawTimer(room);
+    room.state.firstDrawPool = undefined; // 2초 대기 중 이탈로 다시 발표되지 않게 닫는다
+
+    // 가장 높은 숫자를 뽑은 플레이어가 선
+    let maxNumber = -1;
+    let firstPlayerId = '';
+    room.state.firstDraw.forEach((num, pid) => {
+      if (num > maxNumber) {
+        maxNumber = num;
+        firstPlayerId = pid;
+      }
+    });
+
+    const firstDrawResults: Record<string, number> = {};
+    room.state.firstDraw.forEach((num, pid) => {
+      firstDrawResults[pid] = num;
+    });
+
+    const firstNickname = this.ctx.getNicknameByPlayerId(room, firstPlayerId);
+
+    console.log(
+      `[Spice] First draw result in room '${roomName}': ${firstNickname} (${firstPlayerId}) goes first with ${maxNumber}`,
+    );
+
+    this.ctx.broadcastToRoom(roomName, 'firstDrawFinished', {
+      roomName,
+      results: firstDrawResults,
+      firstPlayerId,
+      firstNickname,
+    });
+
+    // 잠시 후 본 게임 시작
+    setTimeout(() => {
+      if (this.ctx.rooms.get(roomName) === room) this.startMainGame(roomName, firstPlayerId);
+    }, 2000);
   }
 
   // ── 선뽑기 후 본 게임 시작 ─────────────────────────────────
 
-  private startMainGame(roomName: string, firstPlayerId: string): void {
+  private startMainGame(roomName: string, drawnFirstPlayerId: string): void {
     const room = this.ctx.rooms.get(roomName);
-    if (!room) return;
+    if (!room || room.state.playerOrder.length === 0) return;
 
+    // 결과 발표 후 2초 사이에 선이 나갔을 수 있다
+    const firstPlayerId = this.ctx.findClientByPlayerId(room, drawnFirstPlayerId)
+      ? drawnFirstPlayerId
+      : (room.playerIds.get(room.state.playerOrder[0]) ?? '');
+
+    room.spiceGameOverMeta = undefined;
     const engine = this.engineFactory.get('spice');
     room.state.deck = engine.createDeck();
     room.gameStarted = true;
@@ -249,7 +295,7 @@ export class SpiceHandler {
     room.clients.forEach((playerClient) => {
       this.ctx.sendToClient(playerClient, 'gameStarted', {
         roomName,
-        deck: room.state.deck,
+        deck: this.ctx.hiddenDeck(room),
         myHand: room.state.hands.get(playerClient) ?? [],
         playerHands: this.ctx.getPlayerHands(room),
         openCards: room.state.openCards,
@@ -281,7 +327,7 @@ export class SpiceHandler {
     }
 
     const playerId = room.playerIds.get(client);
-    if (!playerId) return;
+    if (!playerId || !room.gameStarted) return;
 
     // 내 턴인지 확인
     if (room.state.currentTurnPlayerId !== playerId) {
@@ -296,13 +342,27 @@ export class SpiceHandler {
     }
 
     const hand = room.state.hands.get(client);
-    if (!hand || cardIndex < 0 || cardIndex >= hand.length) {
+    if (!hand || !Number.isInteger(cardIndex) || cardIndex < 0 || cardIndex >= hand.length) {
       this.ctx.sendToClient(client, 'error', { message: '유효하지 않은 카드입니다' });
+      return;
+    }
+
+    if (
+      !SpiceHandler.DECLARABLE_SUITS.includes(declaredSuit) ||
+      !Number.isInteger(declaredNumber) ||
+      declaredNumber < 1 ||
+      declaredNumber > 10
+    ) {
+      this.ctx.sendToClient(client, 'error', { message: '유효하지 않은 선언입니다' });
       return;
     }
 
     // 숫자 유효성 검사: 현재 숫자보다 높아야 함 (리셋 후 첫 턴은 1~3)
     const isReset = room.state.currentNumber === 0 || (room.state.currentNumber ?? 0) >= 10;
+    if (!isReset && room.state.currentSuit && declaredSuit !== room.state.currentSuit) {
+      this.ctx.sendToClient(client, 'error', { message: '같은 향신료로 선언해야 합니다' });
+      return;
+    }
     if (isReset) {
       if (declaredNumber < 1 || declaredNumber > 3) {
         this.ctx.sendToClient(client, 'error', { message: '리셋 후 첫 숫자는 1~3 사이여야 합니다' });
@@ -362,7 +422,7 @@ export class SpiceHandler {
       declaredSuit,
       declaredNumber,
       playerHands: this.ctx.getPlayerHands(room),
-      deck: room.state.deck,
+      deck: this.ctx.hiddenDeck(room),
       // 클라이언트가 자기 틱을 세지 않고 서버 데드라인에 맞춰 카운트다운하도록
       // 제한시간을 함께 내려보낸다. (iOS Safari가 setInterval을 스로틀해도 어긋나지 않음)
       challengeTimeLimitMs: SpiceHandler.CHALLENGE_TIME_MS,
@@ -437,18 +497,17 @@ export class SpiceHandler {
       wonCardCountsExp[pid] = cards.length;
     }
 
-    this.ctx.broadcastToRoom(roomName, 'challengeExpired', {
+    this.broadcastWithOwnWonCards(room, 'challengeExpired', {
       roomName,
       currentTurnPlayerId: nextPlayerId,
       currentSuit: declaredSuit,
       currentNumber: declaredNumber,
       tableStackSize: room.state.tableStack.length,
       playerHands: this.ctx.getPlayerHands(room),
-      deck: room.state.deck,
+      deck: this.ctx.hiddenDeck(room),
       trophyAwarded: trophyEvent ?? undefined,
       trophies: trophiesObj,
       wonCardCounts: wonCardCountsExp,
-      wonCards: Object.fromEntries(wonCardsMapExp),
     });
 
     // 트로피 종료: 1초 후 / 덱 소진 종료: 3초 후
@@ -477,7 +536,7 @@ export class SpiceHandler {
     }
 
     const playerId = room.playerIds.get(client);
-    if (!playerId) return;
+    if (!playerId || !room.gameStarted) return;
 
     // 내 턴인지 확인
     if (room.state.currentTurnPlayerId !== playerId) {
@@ -543,7 +602,7 @@ export class SpiceHandler {
       currentSuit: room.state.currentSuit,
       currentNumber: room.state.currentNumber,
       tableStackSize: room.state.tableStack?.length ?? 0,
-      deck: room.state.deck,
+      deck: this.ctx.hiddenDeck(room),
     });
 
     // 본인에게 업데이트된 손패 전송
@@ -558,14 +617,14 @@ export class SpiceHandler {
   // 그 사람이 화면을 잠그거나 앱을 전환하면(iOS) 아무도 패스하지 않아 판이 멈췄다.
 
   /** 현재 currentTurnPlayerId의 턴을 시작한다 (시작 시각 기록 + 자동 패스 예약) */
-  private startTurn(roomName: string, room: Room): void {
-    room.state.turnStartedAt = Date.now();
+  private startTurn(roomName: string, room: Room, delayMs = 0): void {
+    room.state.turnStartedAt = Date.now() + delayMs;
     this.clearTurnTimer(room);
     const turnPlayerId = room.state.currentTurnPlayerId;
     if (!turnPlayerId) return;
     room.state.spiceTurnTimer = setTimeout(
       () => this.handleTurnTimeout(roomName, turnPlayerId),
-      SpiceHandler.TURN_TIME_MS + SpiceHandler.TURN_TIMEOUT_GRACE_MS,
+      SpiceHandler.TURN_TIME_MS + SpiceHandler.TURN_TIMEOUT_GRACE_MS + delayMs,
     );
   }
 
@@ -590,19 +649,26 @@ export class SpiceHandler {
       return;
     }
 
-    // 턴 주인이 방에서 빠졌다 (재연결 유예 초과 등). 퇴장 처리는 playerOrder에서만
-    // 지우고 currentTurnPlayerId는 그대로 두므로, 여기서 남은 첫 사람에게 넘긴다.
+    // 턴 주인이 방에서 빠졌는데 이탈 처리에서 넘기지 못한 경우의 안전장치
     const nextClient = room.state.playerOrder[0];
-    if (!nextClient) return;
+    if (nextClient) this.moveTurnFromLeaver(roomName, room, turnPlayerId, nextClient);
+  }
+
+  private moveTurnFromLeaver(
+    roomName: string,
+    room: Room,
+    leftPlayerId: string,
+    nextClient: WebSocket,
+  ): void {
     const nextPlayerId = room.playerIds.get(nextClient) ?? '';
     room.state.currentTurnPlayerId = nextPlayerId;
     this.startTurn(roomName, room);
     console.log(
-      `[Spice] Turn holder '${turnPlayerId}' left '${roomName}'. Turn moved to ${nextPlayerId}`,
+      `[Spice] Turn holder '${leftPlayerId}' left '${roomName}'. Turn moved to ${nextPlayerId}`,
     );
     this.ctx.broadcastToRoom(roomName, 'cardPassed', {
       roomName,
-      playerId: turnPlayerId,
+      playerId: leftPlayerId,
       nickname: '',
       auto: true,
       playerHands: this.ctx.getPlayerHands(room),
@@ -610,7 +676,76 @@ export class SpiceHandler {
       currentSuit: room.state.currentSuit,
       currentNumber: room.state.currentNumber,
       tableStackSize: room.state.tableStack?.length ?? 0,
-      deck: room.state.deck,
+      deck: this.ctx.hiddenDeck(room),
+    });
+  }
+
+  // ── 플레이어 이탈 ─────────────────────────────────────────
+
+  handlePlayerLeft(room: Room, playerId: string, orderIndex: number): void {
+    const roomName = room.name;
+
+    if (room.clients.size === 0) {
+      this.clearFirstDrawTimer(room);
+      this.clearTurnTimer(room);
+      if (room.state.challengePhase) clearTimeout(room.state.challengePhase.timer);
+      return;
+    }
+
+    if (room.state.firstDrawPool) {
+      room.state.firstDraw?.delete(playerId);
+      room.state.firstDrawDone?.delete(playerId);
+      this.ctx.broadcastToRoom(roomName, 'firstDrawProgress', {
+        roomName,
+        drawnCount: room.state.firstDrawDone?.size ?? 0,
+        totalCount: room.clients.size,
+      });
+      this.finishFirstDrawIfDone(roomName, room);
+      return;
+    }
+
+    if (!room.gameStarted) return;
+
+    // 혼자 남으면 도전할 사람이 없어 승부가 성립하지 않는다
+    if (room.clients.size === 1) {
+      const trophies = room.state.trophies ? Object.fromEntries(room.state.trophies) : {};
+      this.finishSpiceGame(roomName, trophies, 'playerLeft');
+      return;
+    }
+
+    const order = room.state.playerOrder;
+    const nextClient = order[orderIndex % order.length];
+    const phase = room.state.challengePhase;
+
+    if (phase) {
+      if (phase.playerId === playerId) {
+        // 카드를 낸 사람이 나가면 도전 대상이 없다. 낸 카드만 더미에 남기고 넘어간다
+        clearTimeout(phase.timer);
+        phase.handEmptyPlayerId = undefined;
+        this.resolveChallengeExpired(roomName);
+      } else if (phase.nextPlayerId === playerId) {
+        phase.nextPlayerId = room.playerIds.get(nextClient) ?? '';
+      }
+      return;
+    }
+
+    if (room.state.currentTurnPlayerId === playerId) {
+      this.moveTurnFromLeaver(roomName, room, playerId, nextClient);
+    }
+  }
+
+  /** 획득 더미의 내용은 각자 자기 것만 받는다 (다른 사람 카드 추적 방지) */
+  private broadcastWithOwnWonCards(
+    room: Room,
+    event: string,
+    payload: Record<string, unknown>,
+  ): void {
+    room.clients.forEach((c) => {
+      const pid = room.playerIds.get(c) ?? '';
+      this.ctx.sendToClient(c, event, {
+        ...payload,
+        wonCards: { [pid]: room.state.wonCards?.get(pid) ?? [] },
+      });
     });
   }
 
@@ -734,7 +869,7 @@ export class SpiceHandler {
     const winnerId = challengeSuccess ? challengerId : targetPlayerId;
     const loserId = challengeSuccess ? targetPlayerId : challengerId;
     room.state.currentTurnPlayerId = loserId;
-    this.startTurn(roomName, room);
+    this.startTurn(roomName, room, SpiceHandler.CHALLENGE_RESULT_DISPLAY_MS);
 
     // 트로피 지급: 도전 실패(카드 낸 사람이 진실) + 손패가 비었던 경우
     // 도전이 왔지만 상대가 진실이었음 → 카드 낸 사람의 손패가 이미 비어있으면 트로피 지급
@@ -779,7 +914,7 @@ export class SpiceHandler {
       wonCardCounts[pid] = cards.length;
     }
 
-    this.ctx.broadcastToRoom(roomName, 'challengeResult', {
+    this.broadcastWithOwnWonCards(room, 'challengeResult', {
       roomName,
       challengerId,
       challengerNickname,
@@ -797,11 +932,10 @@ export class SpiceHandler {
       currentSuit: null,
       currentNumber: 0,
       tableStackSize: 0,
-      deck: room.state.deck,
+      deck: this.ctx.hiddenDeck(room),
       trophyAwarded: trophyEvent ?? undefined,
       trophies: trophiesObj,
       wonCardCounts,
-      wonCards: Object.fromEntries(wonCardsMap),
     });
 
     // 트로피 종료: 1초 후 / 덱 소진 종료: 3초 후
@@ -966,7 +1100,7 @@ export class SpiceHandler {
       room.clients.forEach((playerClient) => {
         this.ctx.sendToClient(playerClient, 'gameStarted', {
           roomName,
-          deck: room.state.deck,
+          deck: this.ctx.hiddenDeck(room),
           myHand: room.state.hands.get(playerClient) ?? [],
           playerHands: this.ctx.getPlayerHands(room),
           openCards: room.state.openCards,
@@ -1027,7 +1161,7 @@ export class SpiceHandler {
       currentStep: room.state.currentStep,
       openCards: room.state.openCards,
       chips: room.state.chips,
-      deck: room.state.deck,
+      deck: this.ctx.hiddenDeck(room),
       previousChips: Object.fromEntries(room.state.previousChips),
     });
   }
@@ -1061,7 +1195,7 @@ export class SpiceHandler {
    */
   private checkDeckEmpty(roomName: string): boolean {
     const room = this.ctx.rooms.get(roomName);
-    if (!room || room.state.deck.length > 0) return false;
+    if (!room || !room.gameStarted || room.state.deck.length > 0) return false;
     const trophiesObj = room.state.trophies ? Object.fromEntries(room.state.trophies) : {};
     this.finishSpiceGame(roomName, trophiesObj, 'deck');
     return true;
@@ -1078,10 +1212,11 @@ export class SpiceHandler {
   private finishSpiceGame(
     roomName: string,
     trophiesObj: Record<string, number>,
-    reason: 'trophy' | 'deck',
+    reason: 'trophy' | 'deck' | 'playerLeft',
   ): void {
     const room = this.ctx.rooms.get(roomName);
-    if (!room) return;
+    // 지연 호출이 겹치거나 같은 이름의 새 방을 끝내지 않게 진행 중인 향신료 판만 받는다
+    if (!room || room.gameType !== 'spice' || !room.gameStarted) return;
 
     const wonCardsMap = room.state.wonCards ?? new Map();
 
@@ -1111,11 +1246,21 @@ export class SpiceHandler {
     const winners = playerResults.filter((r) => r.score === maxScore);
 
     this.clearTurnTimer(room);
+    if (room.state.challengePhase) clearTimeout(room.state.challengePhase.timer);
+    room.state.challengePhase = null;
+    room.state.currentTurnPlayerId = undefined;
     room.gameStarted = false;
     room.gameFinished = true;
     room.gameOver = true;
     room.gameOverResult = 'victory';
     room.state.playerReady.clear();
+    room.lastGameResults = playerResults;
+    room.spiceGameOverMeta = {
+      reason,
+      winnerIds: winners.map((w) => w.playerId),
+      winnerNicknames: winners.map((w) => w.nickname),
+      maxScore,
+    };
 
     console.log(
       `[Spice] Game over in '${roomName}' (reason: ${reason}). ` +
@@ -1142,13 +1287,13 @@ export class SpiceHandler {
       this.supabase.updateSessionDuration(sessionId, durationSec ?? 0);
 
       const winnerIds = new Set(winners.map((w) => w.playerId));
-      playerResults.forEach((r, idx) => {
+      playerResults.forEach((r) => {
         this.supabase.finalizePlayerResult({
           sessionId,
           userId: r.playerId,
           isWinner: winnerIds.has(r.playerId),
           score: r.score,
-          rank: idx + 1,
+          rank: playerResults.filter((other) => other.score > r.score).length + 1,
           extra: {
             trophyCount: r.trophyCount,
             wonCardCount: r.wonCardCount,

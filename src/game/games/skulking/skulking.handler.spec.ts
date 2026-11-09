@@ -70,11 +70,30 @@ describe('SkulkingHandler 게임 종료', () => {
     expect(room.gameOver).toBe(true);
   });
 
-  it('마지막 라운드가 아니면 자동 종료하지 않는다', () => {
+  it('마지막 라운드가 아니면 종료하지 않고 서버가 다음 라운드를 시작한다', () => {
+    const startNewRound = jest.fn();
+    (handler as any).startNewRound = startNewRound;
     playRoundEnd(9);
-    jest.advanceTimersByTime(GAME_OVER_DELAY * 2);
+
+    jest.advanceTimersByTime(7999);
+    expect(startNewRound).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(1);
+    expect(startNewRound).toHaveBeenCalledWith(R, 10);
     expect(receivedEvent(a, 'skulkingGameOver')).toHaveLength(0);
     expect(room.gameStarted).toBe(true);
+  });
+
+  it('진행 중인 라운드에서는 skulkingNextRound를 무시한다', () => {
+    const startNewRound = jest.fn();
+    (handler as any).startNewRound = startNewRound;
+    room.gameStarted = true;
+    room.state.skulkingRound = 3;
+    room.state.skulkingPhase = 'play';
+
+    handler.handleNextRound({ roomName: R }, a);
+
+    expect(startNewRound).not.toHaveBeenCalled();
   });
 
   it('구버전 클라이언트가 skulkingNextRound를 보내도 종료는 한 번만 처리된다', () => {

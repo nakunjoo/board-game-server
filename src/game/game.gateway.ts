@@ -110,7 +110,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
               room.pendingAbandonedPlayerIds.push(`disconnected:${playerId}`);
             }
           }
-          this.ctx.leaveRoom(client, roomName);
+          this.removeFromRoom(client, roomName);
           console.log(
             `'${playerId}' grace period expired, removed from '${roomName}'`,
           );
@@ -199,7 +199,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       gameType,
       memberCount: 1,
       players: [{ playerId, nickname, order: 0 }],
-      deck: room.state.deck,
+      deck: this.ctx.hiddenDeck(room),
       playerHands: this.ctx.getPlayerHands(room),
       myHand: [],
       gameStarted: false,
@@ -319,8 +319,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         room.state.turnStartedAt != null && !room.state.challengePhase
           ? Math.max(
               0,
+              // 도전 결과 표시 중에는 시작 시각이 미래라 제한시간을 넘지 않게 자른다
               Math.round(
-                (TURN_TIME_MS - (now - room.state.turnStartedAt)) / 1000,
+                Math.min(TURN_TIME_MS, TURN_TIME_MS - (now - room.state.turnStartedAt)) / 1000,
               ),
             )
           : null;
@@ -344,7 +345,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           ? Object.fromEntries(room.state.trophies)
           : {},
         wonCardCounts,
-        wonCards: Object.fromEntries(wonCardsMap),
+        wonCards: { [playerId!]: wonCardsMap.get(playerId!) ?? [] },
+        spiceGameOverMeta: room.spiceGameOverMeta,
         challengePhase,
         turnTimeLeft,
         challengeTimeLeft,
@@ -376,7 +378,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         gameType: room.gameType,
         memberCount: room.clients.size,
         players,
-        deck: room.state.deck,
+        deck: this.ctx.hiddenDeck(room),
         playerHands: this.ctx.getPlayerHands(room),
         myHand: room.state.hands.get(client) ?? [],
         gameStarted: room.gameStarted,
@@ -390,6 +392,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         chips: room.state.chips,
         currentStep: room.state.currentStep,
         readyPlayers: Array.from(room.state.playerReady),
+        nextRoundReady: Array.from(room.state.nextRoundReady),
         previousChips: Object.fromEntries(room.state.previousChips),
         winLossRecord: Object.fromEntries(room.state.winLossRecord),
         ...spice,
@@ -445,7 +448,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         gameType: room.gameType,
         memberCount: room.clients.size,
         players,
-        deck: room.state.deck,
+        deck: this.ctx.hiddenDeck(room),
         playerHands: this.ctx.getPlayerHands(room),
         myHand: room.state.hands.get(client) ?? [],
         gameStarted: room.gameStarted,
@@ -459,6 +462,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         chips: room.state.chips,
         currentStep: room.state.currentStep,
         readyPlayers: Array.from(room.state.playerReady),
+        nextRoundReady: Array.from(room.state.nextRoundReady),
         previousChips: Object.fromEntries(room.state.previousChips),
         winLossRecord: Object.fromEntries(room.state.winLossRecord),
         ...spice,
@@ -511,7 +515,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       gameType: room.gameType,
       memberCount: room.clients.size,
       players,
-      deck: room.state.deck,
+      deck: this.ctx.hiddenDeck(room),
       playerHands: this.ctx.getPlayerHands(room),
       myHand: room.state.hands.get(client) ?? [],
       gameStarted: room.gameStarted,
@@ -525,6 +529,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       chips: room.state.chips,
       currentStep: room.state.currentStep,
       readyPlayers: Array.from(room.state.playerReady),
+      nextRoundReady: Array.from(room.state.nextRoundReady),
       previousChips: Object.fromEntries(room.state.previousChips),
       winLossRecord: Object.fromEntries(room.state.winLossRecord),
       ...spice,
@@ -567,6 +572,26 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.ctx.sendToClient(client, 'passwordVerified', { name, success });
   }
 
+  /** 방에서 뺀 뒤 게임별 진행 상태를 다시 맞춘다 (타이머에서도 불리므로 예외를 밖으로 내지 않는다) */
+  private removeFromRoom(client: WebSocket, roomName: string): void {
+    const left = this.ctx.leaveRoom(client, roomName);
+    if (!left) return;
+    const { room, playerId, orderIndex } = left;
+    try {
+      if (room.gameType === 'spice') {
+        this.spiceHandler.handlePlayerLeft(room, playerId, orderIndex);
+      } else if (room.gameType === 'skulking') {
+        this.skulkingHandler.handlePlayerLeft(room, playerId);
+      } else if (room.gameType === 'casino') {
+        this.casinoHandler.handlePlayerLeft(room, playerId);
+      } else {
+        this.gangHandler.handlePlayerLeft(room, playerId);
+      }
+    } catch (e) {
+      console.error(`Failed to reconcile '${roomName}' after '${playerId}' left`, e);
+    }
+  }
+
   @SubscribeMessage('leaveRoom')
   handleLeaveRoom(
     @MessageBody() data: { name: string },
@@ -584,7 +609,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
       }
     }
-    this.ctx.leaveRoom(client, data.name);
+    this.removeFromRoom(client, data.name);
     this.ctx.sendToClient(client, 'roomLeft', {
       name: data.name,
       message: `'${data.name}' 방에서 퇴장했습니다`,
@@ -640,7 +665,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       roomName,
       message: '방장에 의해 강퇴되었습니다',
     });
-    this.ctx.leaveRoom(targetClient, roomName);
+    this.removeFromRoom(targetClient, roomName);
     console.log(
       `'${targetNickname}' (${targetPlayerId}) kicked from room '${roomName}' by host`,
     );

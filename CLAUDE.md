@@ -10,6 +10,12 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-11-09 | **이탈 처리와 방장 위임** — `GameContext.leaveRoom`이 방장을 접속 중인 다음 사람에게 넘기고 `userLeft`에 `hostPlayerId`/`hostNickname`을 싣는다. 게이트웨이 `removeFromRoom`이 나가기·끊김 유예 만료·강퇴 뒤 게임별 `handlePlayerLeft`를 호출해 준비 집계, 선뽑기, 턴, 도전 페이즈, 비드, 트릭 순서를 다시 맞춘다. 방이 비면 타이머를 모두 해제. `replaceClient`는 Map 순서를 유지 |
+| 2026-11-09 | **덱 숨김** — 클라이언트로 보내는 덱은 `ctx.hiddenDeck(room)`(장수만 같은 가짜 카드). Spice 획득 더미 내용은 본인 것만 전송 |
+| 2026-11-09 | **Gang** — `startGame` 방장·진행 중 검사, `successCount` 초기화, 라운드 종료 후 `selectChip`/`playerReady` 무시, `testSuccess`/`testFail`/`drawCard`는 `NODE_ENV=development`의 Gang 방에서만 동작, 스트레이트는 중복 숫자를 합쳐 가장 높은 5연속의 탑으로 판정(`getStraightTop`), `roomJoined`에 `nextRoundReady` 추가 |
+| 2026-11-09 | **Spice** — DB 순위를 점수 기준으로 저장, 게임 종료 멱등 처리와 종료 후 `playCard`/`pass` 차단, 진행 중 `startGame` 차단, 선언 향신료·숫자 검증, 선뽑기 20초 후 자동 뽑기, 도전 결과 표시 3초를 턴 시계에서 제외, 혼자 남으면 `reason: 'playerLeft'`로 종료, 종료 결과를 `roomJoined`로 복원(`lastGameResults`, `spiceGameOverMeta`) |
+| 2026-11-09 | **Skulking** — 다음 라운드를 서버가 8초 뒤 시작(`skulkingNextRound`는 라운드 사이에만 유효), 거부된 카드 요청이 자동 제출 타이머를 지우지 않음, 트릭 완료 후 재제출 차단, 비드·`cardIndex`·Tigress 선언 검증, 선뽑기 20초 후 자동 뽑기, 혼자 남으면 종료, 종료 결과 `skulkingGameOverResult` 복원 |
+| 2026-11-09 | **Casino** — 시간 제한 타이머가 같은 이름의 새 방을 끝내지 않음, 종료 시 결과가 안 온 베팅금 환불, 대출 조건을 `잔액 < max(초기금 5%, 100)`으로 변경(100 미만 잔액 고착 해소), 종료 결과 `casinoLastResult` 복원 |
 | 2026-11-09 | **GitHub Actions 자동 배포 추가** (`.github/workflows/deploy.yml`) — main push(문서만 바뀐 경우 제외) 또는 수동 실행 시 amd64 이미지를 빌드해 GCP VM 컨테이너를 교체하고 `/api` 응답을 확인. 고정 SSH 키로 `deploy` 계정에 접속한다(VM의 guest agent가 멈춰 있어 gcloud 메타데이터 키는 적용되지 않음). Secrets: `VM_HOST`, `VM_SSH_USER`, `VM_SSH_KEY`, `VM_KNOWN_HOSTS`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`(`notify` job이 성공·실패·종료 코드를 텔레그램으로 전송, 없으면 건너뜀). 환경변수 원본은 VM의 `/home/deploy/.env.production`. 컨테이너 로그는 10MB × 3개로 제한. 배포하면 메모리의 방이 전부 사라진다 |
 | 2026-11-09 | **미처리 rejection으로 프로세스가 죽던 문제 수정** — 게이트웨이가 async 핸들러를 `return` 없이 호출해 Nest가 예외를 잡지 못했고, `{"event":"casinoStart"}`처럼 data 없는 메시지 하나로 Node 22가 종료됐음. `startGame`/`casinoStart`가 promise를 반환하도록 변경(새 async 핸들러도 반드시 `return`), `main.ts`에 `unhandledRejection` 로깅 추가, 카지노 방의 `startGame`은 Gang 핸들러로 넘기지 않음 |
 | 2026-11-09 | **스컬킹 10라운드 종료 수정** — 클라이언트는 마지막 라운드에 `skulkingNextRound`를 보내지 않아 `endGame`이 호출되지 않았음. `endRound`가 마지막 라운드면 5초 뒤 서버에서 직접 종료. `endGame`은 중복 실행을 막고 `gameStarted = false` 처리, `handleStartGame`은 `gameFinished`/`gameOver` 초기화 |

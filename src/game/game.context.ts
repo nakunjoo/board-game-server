@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { WebSocket } from 'ws';
-import { Room, PlayerHand } from './game.types';
+import { Card, Room, PlayerHand } from './game.types';
 
 /**
  * 모든 게임이 공유하는 상태(rooms, clients)와 유틸 메서드를 제공합니다.
@@ -9,6 +9,7 @@ import { Room, PlayerHand } from './game.types';
 @Injectable()
 export class GameContext {
   static readonly DISCONNECT_GRACE_MS = 30000;
+  private static readonly HIDDEN_CARD = { type: 'hidden', value: 0, image: '', name: '' } as unknown as Card;
   static readonly CARD_IMAGE_BASE_URL =
     process.env.CARD_IMAGE_BASE_URL ||
     'https://storage.googleapis.com/teak-banner-431004-n3.appspot.com/images/cards';
@@ -89,9 +90,13 @@ export class GameContext {
 
   // ── 방 나가기 ─────────────────────────────────────────────
 
-  leaveRoom(client: WebSocket, roomName: string): void {
+  /** 방에서 플레이어를 뺀다. 게임 진행 상태는 호출한 쪽이 반환값으로 다시 맞춘다 */
+  leaveRoom(
+    client: WebSocket,
+    roomName: string,
+  ): { room: Room; playerId: string; orderIndex: number } | null {
     const room = this.rooms.get(roomName);
-    if (!room) return;
+    if (!room) return null;
 
     const playerId = room.playerIds.get(client);
     const nickname = room.nicknames.get(client);
@@ -125,34 +130,53 @@ export class GameContext {
       this.rooms.delete(roomName);
       console.log(`Room '${roomName}' deleted (empty)`);
     } else {
+      if (playerId === room.hostPlayerId) this.delegateHost(room);
       this.broadcastToRoom(roomName, 'userLeft', {
         roomName,
         memberCount: room.clients.size,
         playerId,
         nickname,
         players: this.getPlayersWithOrder(room),
+        hostPlayerId: room.hostPlayerId,
+        hostNickname: room.hostNickname,
       });
     }
+
+    return playerId ? { room, playerId, orderIndex } : null;
+  }
+
+  /** 끊겨서 유예 중인 사람보다 접속 중인 사람에게 먼저 방장을 넘긴다 */
+  private delegateHost(room: Room): void {
+    const clients = Array.from(room.playerIds.keys());
+    const next = clients.find((c) => c.readyState === WebSocket.OPEN) ?? clients[0];
+    room.hostPlayerId = room.playerIds.get(next) ?? '';
+    room.hostNickname = room.nicknames.get(next) ?? '';
+  }
+
+  /** 클라이언트는 덱 장수만 쓴다. 순서가 내려가면 다음 카드를 미리 볼 수 있어 내용을 가린다 */
+  hiddenDeck(room: Room): Card[] {
+    return room.state.deck.map(() => GameContext.HIDDEN_CARD);
   }
 
   // ── 소켓 교체 (재연결) ────────────────────────────────────
 
   replaceClient(room: Room, oldClient: WebSocket, newClient: WebSocket): void {
-    const playerId = room.playerIds.get(oldClient);
-    const nickname = room.nicknames.get(oldClient);
-    const hand = room.state.hands.get(oldClient) ?? [];
+    // 좌석과 트릭 순서가 Map 순서를 따르므로, 지우고 다시 넣지 않고 제자리에서 바꾼다
+    const swapKey = <V>(map: Map<WebSocket, V>) => {
+      const entries = Array.from(map, ([c, v]): [WebSocket, V] => [
+        c === oldClient ? newClient : c,
+        v,
+      ]);
+      map.clear();
+      entries.forEach(([c, v]) => map.set(c, v));
+    };
+    const clients = Array.from(room.clients, (c) => (c === oldClient ? newClient : c));
+    room.clients.clear();
+    clients.forEach((c) => room.clients.add(c));
 
-    room.clients.delete(oldClient);
-    room.clients.add(newClient);
-
-    room.playerIds.delete(oldClient);
-    if (playerId) room.playerIds.set(newClient, playerId);
-
-    room.nicknames.delete(oldClient);
-    if (nickname) room.nicknames.set(newClient, nickname);
-
-    room.state.hands.delete(oldClient);
-    room.state.hands.set(newClient, hand);
+    swapKey(room.playerIds);
+    swapKey(room.nicknames);
+    swapKey(room.state.hands);
 
     const idx = room.state.playerOrder.indexOf(oldClient);
     if (idx !== -1) room.state.playerOrder[idx] = newClient;
