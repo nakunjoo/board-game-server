@@ -10,6 +10,7 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-11-09 | **재검사 후속** — Skulking 재시작 시 `skulkingRound` 초기화, 10라운드 종료 대기 타이머를 `skulkingNextRoundTimer`로 관리해 재시작 때 해제, 트릭 항목에 닉네임 저장. Spice·Skulking은 선뽑기 중 혼자 남으면 `firstDrawCancelled`/`skulkingFirstDrawCancelled`로 대기 상태 복귀(앱 미반영). 종료 결과 복원은 그 판 참가자에게만. Casino 이탈 시 투표 재계산 |
 | 2026-11-09 | **이탈 처리와 방장 위임** — `GameContext.leaveRoom`이 방장을 접속 중인 다음 사람에게 넘기고 `userLeft`에 `hostPlayerId`/`hostNickname`을 싣는다. 게이트웨이 `removeFromRoom`이 나가기·끊김 유예 만료·강퇴 뒤 게임별 `handlePlayerLeft`를 호출해 준비 집계, 선뽑기, 턴, 도전 페이즈, 비드, 트릭 순서를 다시 맞춘다. 방이 비면 타이머를 모두 해제. `replaceClient`는 Map 순서를 유지 |
 | 2026-11-09 | **덱 숨김** — 클라이언트로 보내는 덱은 `ctx.hiddenDeck(room)`(장수만 같은 가짜 카드). Spice 획득 더미 내용은 본인 것만 전송 |
 | 2026-11-09 | **Gang** — `startGame` 방장·진행 중 검사, `successCount` 초기화, 라운드 종료 후 `selectChip`/`playerReady` 무시, `testSuccess`/`testFail`/`drawCard`는 `NODE_ENV=development`의 Gang 방에서만 동작, 스트레이트는 중복 숫자를 합쳐 가장 높은 5연속의 탑으로 판정(`getStraightTop`), `roomJoined`에 `nextRoundReady` 추가 |

@@ -194,7 +194,8 @@ export class SpiceHandler {
 
   private startMainGame(roomName: string, drawnFirstPlayerId: string): void {
     const room = this.ctx.rooms.get(roomName);
-    if (!room || room.state.playerOrder.length === 0) return;
+    // 결과 발표 후 2초 사이에 선뽑기가 취소됐을 수 있다
+    if (!room || room.state.playerOrder.length === 0 || !room.state.firstDraw) return;
 
     // 결과 발표 후 2초 사이에 선이 나갔을 수 있다
     const firstPlayerId = this.ctx.findClientByPlayerId(room, drawnFirstPlayerId)
@@ -689,6 +690,16 @@ export class SpiceHandler {
       this.clearFirstDrawTimer(room);
       this.clearTurnTimer(room);
       if (room.state.challengePhase) clearTimeout(room.state.challengePhase.timer);
+      return;
+    }
+
+    // 선뽑기 중에 혼자 남으면 시작하지 않고 대기 상태로 돌아간다
+    if (room.state.firstDraw && room.clients.size === 1) {
+      this.clearFirstDrawTimer(room);
+      room.state.firstDraw = undefined;
+      room.state.firstDrawDone = undefined;
+      room.state.firstDrawPool = undefined;
+      this.ctx.broadcastToRoom(roomName, 'firstDrawCancelled', { roomName });
       return;
     }
 

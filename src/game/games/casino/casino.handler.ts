@@ -349,6 +349,13 @@ export class CasinoHandler {
     if (!playerId) return;
 
     room.state.casinoVotes.add(playerId);
+    this.reconcileVotes(room);
+  }
+
+  /** 투표 현황을 알리고 필요한 표를 채웠으면 게임을 끝낸다 (이탈로 필요 표 수가 줄 때도 호출) */
+  private reconcileVotes(room: Room): void {
+    if (!room.state.casinoVotes) return;
+    const roomName = room.name;
 
     const totalPlayers = room.clients.size;
     const needed =
@@ -597,10 +604,14 @@ export class CasinoHandler {
   handlePlayerLeft(room: Room, playerId: string): void {
     room.state.casinoVotes?.delete(playerId);
     // 방이 없어지면 시간 제한 타이머도 함께 끝낸다
-    if (room.clients.size === 0 && room.casinoTimer) {
-      clearTimeout(room.casinoTimer);
-      room.casinoTimer = undefined;
+    if (room.clients.size === 0) {
+      if (room.casinoTimer) {
+        clearTimeout(room.casinoTimer);
+        room.casinoTimer = undefined;
+      }
+      return;
     }
+    if (room.gameStarted && room.state.casinoVotes?.size) this.reconcileVotes(room);
   }
 
   // ── buildCasinoState (재연결용) ───────────────────────────────
@@ -608,7 +619,10 @@ export class CasinoHandler {
   buildCasinoState(room: Room, playerId: string): Record<string, unknown> {
     if (room.gameType !== 'casino') return {};
     if (!room.gameStarted || !room.state.casinoBalances) {
-      return room.casinoLastResult ? { casinoLastResult: room.casinoLastResult } : {};
+      // 지난 판 결과는 그 판을 한 사람에게만 복원한다 (새로 들어온 사람에게 보이지 않게)
+      return room.casinoLastResult?.players.some((p) => p.playerId === playerId)
+        ? { casinoLastResult: room.casinoLastResult }
+        : {};
     }
 
     const players: {

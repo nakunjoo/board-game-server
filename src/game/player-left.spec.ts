@@ -230,6 +230,15 @@ describe('플레이어 이탈과 게임별 진행', () => {
       expect(receivedEvent(a, 'firstDrawFinished')).toHaveLength(1);
     });
 
+    it('선뽑기 중 혼자 남으면 취소한다', () => {
+      handler.handleStartGame({ roomName: R }, a);
+      leave(c, 'C');
+      leave(b, 'B');
+      expect(receivedEvent(a, 'firstDrawCancelled')).toHaveLength(1);
+      expect(room.state.firstDraw).toBeUndefined();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
     it('턴 주인이 나가면 순서상 다음 사람에게 바로 넘긴다', () => {
       room.gameStarted = true;
       room.state.currentTurnPlayerId = 'B';
@@ -446,6 +455,89 @@ describe('플레이어 이탈과 게임별 진행', () => {
       expect(receivedEvent(a, 'skulkingGameOver')).toHaveLength(1);
     });
 
+    describe('재시작', () => {
+      const finishPreviousGame = () => {
+        room.gameStarted = true;
+        room.state.skulkingRound = 10;
+        room.state.scores = new Map([['A', 10], ['B', 20], ['C', 0]]);
+        room.state.roundScores = new Map();
+        room.state.roundBidTrickHistory = [];
+        (handler as any).endGame(R);
+      };
+
+      it('재시작하면 이전 판 라운드를 지운다', async () => {
+        finishPreviousGame();
+        await handler.handleStartGame({ roomName: R }, a);
+        expect(room.state.skulkingRound).toBeUndefined();
+      });
+
+      it('재시작 선뽑기 중에는 skulkingNextRound를 무시한다', async () => {
+        const startNewRound = jest.fn();
+        (handler as any).startNewRound = startNewRound;
+        finishPreviousGame();
+        await handler.handleStartGame({ roomName: R }, a);
+        handler.handleNextRound({ roomName: R }, a);
+        expect(startNewRound).not.toHaveBeenCalled();
+      });
+
+      it('이전 판의 종료 대기 타이머가 새 판을 끝내지 않는다', async () => {
+        room.gameStarted = true;
+        room.state.skulkingRound = 10;
+        room.state.bids = new Map([['A', 0], ['B', 0], ['C', 0]]);
+        room.state.tricks = new Map();
+        room.state.scores = new Map();
+        room.state.roundScores = new Map();
+        room.state.roundBidTrickHistory = [];
+        (handler as any).endRound(R);
+        leave(c, 'C');
+        (handler as any).endGame(R);
+        await handler.handleStartGame({ roomName: R }, a);
+        const before = receivedEvent(a, 'skulkingGameOver').length;
+        jest.advanceTimersByTime(5000);
+        expect(receivedEvent(a, 'skulkingGameOver')).toHaveLength(before);
+        expect(room.gameStarted).toBe(true);
+      });
+
+      it('종료 결과는 그 판을 한 사람에게만 복원한다', () => {
+        finishPreviousGame();
+        expect(handler.buildSkulkingState(room, 'A')).toHaveProperty('skulkingGameOverResult');
+        expect(handler.buildSkulkingState(room, 'newcomer')).not.toHaveProperty(
+          'skulkingGameOverResult',
+        );
+      });
+    });
+
+    it('선뽑기 중 혼자 남으면 취소하고 대기 상태로 돌아간다', async () => {
+      await handler.handleStartGame({ roomName: R }, a);
+      leave(c, 'C');
+      leave(b, 'B');
+      expect(receivedEvent(a, 'skulkingFirstDrawCancelled')).toHaveLength(1);
+      expect(room.gameStarted).toBe(false);
+      expect(room.state.skulkingFirstDraw).toBeUndefined();
+    });
+
+    it('결과 발표 후 2초 사이 혼자 남으면 본 게임을 시작하지 않는다', async () => {
+      await handler.handleStartGame({ roomName: R }, a);
+      leave(c, 'C');
+      handler.handleFirstDraw({ roomName: R }, a);
+      handler.handleFirstDraw({ roomName: R }, b);
+      expect(receivedEvent(a, 'skulkingFirstDrawFinished')).toHaveLength(1);
+      leave(b, 'B');
+      expect(() => jest.advanceTimersByTime(2000)).not.toThrow();
+      expect(room.state.skulkingRound).toBeUndefined();
+    });
+
+    it('카드를 내고 나간 사람도 트릭 결과에 닉네임으로 나온다', () => {
+      startTrick(1);
+      room.state.hands.set(b, [card('sk-yellow', 13)]);
+      handler.handlePlayCard({ roomName: R, cardIndex: 0 }, b);
+      leave(b, 'B');
+      room.state.hands.set(c, [card('sk-yellow', 2)]);
+      handler.handlePlayCard({ roomName: R, cardIndex: 0 }, c);
+      const trick = receivedEvent(a, 'skulkingTrickResult')[0].data;
+      expect(trick.winnerNickname).toBe('nick-B');
+    });
+
     it('방이 없어지면 타이머를 모두 끝낸다', () => {
       startTrick(0);
       leave(a, 'A');
@@ -500,6 +592,22 @@ describe('플레이어 이탈과 게임별 진행', () => {
     it('종료 후 재연결하면 결과를 다시 받는다', () => {
       jest.advanceTimersByTime(300_000);
       expect(handler.buildCasinoState(room, 'A')).toHaveProperty('casinoLastResult');
+    });
+
+    it('그 판을 하지 않은 사람에게는 결과를 보내지 않는다', () => {
+      jest.advanceTimersByTime(300_000);
+      expect(handler.buildCasinoState(room, 'newcomer')).not.toHaveProperty('casinoLastResult');
+    });
+
+    it('이탈로 필요한 표 수가 줄면 다시 계산해 종료한다', () => {
+      const d = fakeSocket();
+      room.clients.add(d);
+      room.playerIds.set(d, 'D');
+      room.nicknames.set(d, 'nick-D');
+      room.state.casinoVotes = new Set(['A', 'B']);
+      ctx.leaveRoom(d, R);
+      handler.handlePlayerLeft(room, 'D');
+      expect(receivedEvent(a, 'casinoGameOver')).toHaveLength(1);
     });
   });
 });

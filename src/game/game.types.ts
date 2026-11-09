@@ -113,6 +113,7 @@ export interface GameState {
   skulkingTrickIndex?: number; // 현재 트릭 내는 순서 인덱스
   currentTrick?: Array<{
     playerId: string;
+    nickname?: string;
     card: Card;
     tigressDeclared?: 'escape' | 'pirate';
   }>; // 현재 트릭
@@ -174,6 +175,6 @@ export interface Room {
     winnerNicknames: string[];
     maxScore: number;
   };
-  skulkingGameOverResult?: unknown;
-  casinoLastResult?: unknown;
+  skulkingGameOverResult?: { ranking: { playerId: string }[] };
+  casinoLastResult?: { players: { playerId: string }[] };
 }

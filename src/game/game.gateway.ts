@@ -283,7 +283,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // ── Skulking 재연결 공통 필드 ─────────────────────────────
     const buildSkulkingState = () => {
       if (room.gameType !== 'skulking') return {};
-      return this.skulkingHandler.buildSkulkingState(room);
+      return this.skulkingHandler.buildSkulkingState(room, playerId!);
     };
 
     // ── Casino 재연결 공통 필드 ───────────────────────────────
