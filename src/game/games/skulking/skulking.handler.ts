@@ -6,6 +6,7 @@ import { Card } from '../../game.types';
 import { DatabaseService } from '../../../database/database.service';
 
 const TOTAL_ROUNDS = 10;
+const GAME_OVER_DELAY_MS = 5000; // 마지막 라운드 결과를 보여주는 시간
 const SPECIAL_TYPES = ['sk-escape', 'sk-pirate', 'sk-mermaid', 'sk-skulking', 'sk-tigress'];
 
 @Injectable()
@@ -56,6 +57,8 @@ export class SkulkingHandler {
     room.state.skulkingFirstDrawPool = numbers;
 
     room.gameStarted = true;
+    room.gameFinished = false;
+    room.gameOver = false;
 
     this.ctx.broadcastToRoom(roomName, 'skulkingFirstDrawStarted', {
       roomName,
@@ -669,6 +672,13 @@ export class SkulkingHandler {
       roundBidTrickHistory: room.state.roundBidTrickHistory,
       isLastRound: round >= TOTAL_ROUNDS,
     });
+
+    // 클라이언트는 마지막 라운드에 skulkingNextRound를 보내지 않으므로 서버가 직접 끝낸다
+    if (round >= TOTAL_ROUNDS) {
+      setTimeout(() => {
+        if (this.ctx.rooms.get(roomName) === room) this.endGame(roomName);
+      }, GAME_OVER_DELAY_MS);
+    }
   }
 
   private startNewRound(roomName: string, round: number): void {
@@ -713,6 +723,8 @@ export class SkulkingHandler {
 
   private endGame(roomName: string): void {
     const room = this.ctx.rooms.get(roomName)!;
+    if (room.gameFinished) return;
+    room.gameStarted = false;
     room.gameFinished = true;
     room.gameOver = true;
 

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { WebSocket } from 'ws';
+import { Room } from '../../game.types';
 import { GameContext } from '../../game.context';
 import { GameEngineFactory } from '../../game-engine.factory';
 import { DatabaseService } from '../../../database/database.service';
@@ -10,6 +11,18 @@ import { DatabaseService } from '../../../database/database.service';
  */
 @Injectable()
 export class SpiceHandler {
+  /** 도전 페이즈 제한시간. 클라이언트에도 이 값을 내려보내 카운트다운을 맞춘다. */
+  static readonly CHALLENGE_TIME_MS = 5000;
+  /** 턴 제한시간. 초과 시 서버가 자동 패스한다. */
+  static readonly TURN_TIME_MS = 30000;
+  /**
+   * 자동 패스는 턴 제한시간 + 이만큼 뒤에 실행한다.
+   * 클라이언트가 0초를 보여준 직후 바로 턴이 넘어가 보이지 않도록 하는 여유분.
+   */
+  private static readonly TURN_TIMEOUT_GRACE_MS = 1500;
+  /** 자동 패스 직후 이 시간 안에 같은 사람이 보낸 pass는 에러 없이 무시 (구버전 클라이언트 호환) */
+  private static readonly LATE_PASS_IGNORE_MS = 5000;
+
   constructor(
     private readonly ctx: GameContext,
     private readonly engineFactory: GameEngineFactory,
@@ -161,7 +174,7 @@ export class SpiceHandler {
     room.state.firstDrawDone = undefined;
     room.state.firstDrawPool = undefined;
     room.state.currentTurnPlayerId = firstPlayerId;
-    room.state.turnStartedAt = Date.now();
+    this.startTurn(roomName, room);
     room.state.currentSuit = null;
     room.state.currentNumber = 0;
     room.state.tableStack = [];
@@ -324,10 +337,11 @@ export class SpiceHandler {
     // 5초 후 도전 없으면 자동 진행
     const challengeTimer = setTimeout(() => {
       this.resolveChallengeExpired(roomName);
-    }, 5000);
+    }, SpiceHandler.CHALLENGE_TIME_MS);
 
     // 도전 페이즈 상태 저장
     room.state.turnStartedAt = null; // 도전 페이즈 중 턴 타이머 일시 중단
+    this.clearTurnTimer(room);
     room.state.challengePhase = {
       playerId,
       playedCard,
@@ -349,6 +363,9 @@ export class SpiceHandler {
       declaredNumber,
       playerHands: this.ctx.getPlayerHands(room),
       deck: room.state.deck,
+      // 클라이언트가 자기 틱을 세지 않고 서버 데드라인에 맞춰 카운트다운하도록
+      // 제한시간을 함께 내려보낸다. (iOS Safari가 setInterval을 스로틀해도 어긋나지 않음)
+      challengeTimeLimitMs: SpiceHandler.CHALLENGE_TIME_MS,
     });
 
     // 본인에게 업데이트된 손패 전송
@@ -405,8 +422,8 @@ export class SpiceHandler {
     room.state.currentSuit = declaredSuit;
     room.state.currentNumber = declaredNumber;
     room.state.currentTurnPlayerId = nextPlayerId;
-    room.state.turnStartedAt = Date.now();
     room.state.challengePhase = null;
+    this.startTurn(roomName, room);
 
     const trophiesObj = room.state.trophies ? Object.fromEntries(room.state.trophies) : {};
 
@@ -464,10 +481,33 @@ export class SpiceHandler {
 
     // 내 턴인지 확인
     if (room.state.currentTurnPlayerId !== playerId) {
+      // 서버가 방금 시간 초과로 자동 패스한 사람이 늦게 보낸 pass (구버전 클라이언트의
+      // 자체 자동 패스 등) — 사용자에게 알릴 일이 아니므로 조용히 무시한다
+      const last = room.state.spiceLastAutoPass;
+      if (
+        last?.playerId === playerId &&
+        Date.now() - last.at < SpiceHandler.LATE_PASS_IGNORE_MS
+      ) {
+        return;
+      }
       this.ctx.sendToClient(client, 'error', { message: '지금은 당신의 차례가 아닙니다' });
       return;
     }
 
+    // 도전 페이즈 중에는 패스할 수 없음 (playCard와 동일한 규칙).
+    // 도전 페이즈 동안 currentTurnPlayerId는 카드를 낸 사람 그대로라, 이 검사가 없으면
+    // 그 사람의 pass가 통과해 카드를 한 장 더 받고 턴 상태가 꼬인다.
+    if (room.state.challengePhase) {
+      this.ctx.sendToClient(client, 'error', { message: '도전 페이즈 중입니다' });
+      return;
+    }
+
+    this.applyPass(roomName, room, client, false);
+  }
+
+  /** 패스 처리 본체 — 사용자 패스와 서버 자동 패스가 공유한다 */
+  private applyPass(roomName: string, room: Room, client: WebSocket, auto: boolean): void {
+    const playerId = room.playerIds.get(client) ?? '';
     const nickname = room.nicknames.get(client) ?? playerId;
 
     // 패스 시 덱에서 카드 1장 드로우
@@ -484,10 +524,10 @@ export class SpiceHandler {
     const nextClient = room.state.playerOrder[nextIndex];
     const nextPlayerId = room.playerIds.get(nextClient) ?? '';
     room.state.currentTurnPlayerId = nextPlayerId;
-    room.state.turnStartedAt = Date.now();
+    this.startTurn(roomName, room);
 
     console.log(
-      `[Spice] '${nickname}' passed. Drew 1 card. Next: ${nextPlayerId}`,
+      `[Spice] '${nickname}' ${auto ? 'auto-passed (turn timeout)' : 'passed'}. Drew 1 card. Next: ${nextPlayerId}`,
     );
 
     // 덱 소진 체크
@@ -497,6 +537,7 @@ export class SpiceHandler {
       roomName,
       playerId,
       nickname,
+      auto,
       playerHands: this.ctx.getPlayerHands(room),
       currentTurnPlayerId: nextPlayerId,
       currentSuit: room.state.currentSuit,
@@ -509,6 +550,67 @@ export class SpiceHandler {
     this.ctx.sendToClient(client, 'myHandUpdate', {
       roomName,
       myHand: hand,
+    });
+  }
+
+  // ── 턴 타이머 ─────────────────────────────────────────────
+  // 턴 제한은 서버가 집행한다. 예전엔 턴 주인의 클라이언트가 스스로 pass를 보냈는데,
+  // 그 사람이 화면을 잠그거나 앱을 전환하면(iOS) 아무도 패스하지 않아 판이 멈췄다.
+
+  /** 현재 currentTurnPlayerId의 턴을 시작한다 (시작 시각 기록 + 자동 패스 예약) */
+  private startTurn(roomName: string, room: Room): void {
+    room.state.turnStartedAt = Date.now();
+    this.clearTurnTimer(room);
+    const turnPlayerId = room.state.currentTurnPlayerId;
+    if (!turnPlayerId) return;
+    room.state.spiceTurnTimer = setTimeout(
+      () => this.handleTurnTimeout(roomName, turnPlayerId),
+      SpiceHandler.TURN_TIME_MS + SpiceHandler.TURN_TIMEOUT_GRACE_MS,
+    );
+  }
+
+  private clearTurnTimer(room: Room): void {
+    if (room.state.spiceTurnTimer) {
+      clearTimeout(room.state.spiceTurnTimer);
+      room.state.spiceTurnTimer = undefined;
+    }
+  }
+
+  private handleTurnTimeout(roomName: string, turnPlayerId: string): void {
+    const room = this.ctx.rooms.get(roomName);
+    if (!room || !room.gameStarted || room.state.challengePhase) return;
+    // 그 사이 턴이 이미 넘어갔으면 무시
+    if (room.state.currentTurnPlayerId !== turnPlayerId) return;
+    room.state.spiceTurnTimer = undefined;
+
+    const client = this.ctx.findClientByPlayerId(room, turnPlayerId);
+    if (client && room.state.playerOrder.includes(client)) {
+      room.state.spiceLastAutoPass = { playerId: turnPlayerId, at: Date.now() };
+      this.applyPass(roomName, room, client, true);
+      return;
+    }
+
+    // 턴 주인이 방에서 빠졌다 (재연결 유예 초과 등). 퇴장 처리는 playerOrder에서만
+    // 지우고 currentTurnPlayerId는 그대로 두므로, 여기서 남은 첫 사람에게 넘긴다.
+    const nextClient = room.state.playerOrder[0];
+    if (!nextClient) return;
+    const nextPlayerId = room.playerIds.get(nextClient) ?? '';
+    room.state.currentTurnPlayerId = nextPlayerId;
+    this.startTurn(roomName, room);
+    console.log(
+      `[Spice] Turn holder '${turnPlayerId}' left '${roomName}'. Turn moved to ${nextPlayerId}`,
+    );
+    this.ctx.broadcastToRoom(roomName, 'cardPassed', {
+      roomName,
+      playerId: turnPlayerId,
+      nickname: '',
+      auto: true,
+      playerHands: this.ctx.getPlayerHands(room),
+      currentTurnPlayerId: nextPlayerId,
+      currentSuit: room.state.currentSuit,
+      currentNumber: room.state.currentNumber,
+      tableStackSize: room.state.tableStack?.length ?? 0,
+      deck: room.state.deck,
     });
   }
 
@@ -526,8 +628,15 @@ export class SpiceHandler {
       return;
     }
 
+    // 페이즈가 이미 닫혔다. 닫히는 경우는 딱 둘 — 5초 만료, 또는 남이 먼저 도전.
+    // 둘 다 도전한 사람 잘못이 아니라 '한 발 늦은 것'뿐이므로 error로 올리지 않는다.
+    // (error는 클라이언트에서 alert로 뜬다)
     if (!room.state.challengePhase) {
-      this.ctx.sendToClient(client, 'error', { message: '도전 페이즈가 아닙니다' });
+      const who = room.nicknames.get(client) ?? room.playerIds.get(client);
+      console.log(
+        `[Spice] Late challenge from '${who}' in '${roomName}' — phase already closed. Ignored.`,
+      );
+      this.ctx.sendToClient(client, 'challengeTooLate', { roomName });
       return;
     }
 
@@ -625,7 +734,7 @@ export class SpiceHandler {
     const winnerId = challengeSuccess ? challengerId : targetPlayerId;
     const loserId = challengeSuccess ? targetPlayerId : challengerId;
     room.state.currentTurnPlayerId = loserId;
-    room.state.turnStartedAt = Date.now();
+    this.startTurn(roomName, room);
 
     // 트로피 지급: 도전 실패(카드 낸 사람이 진실) + 손패가 비었던 경우
     // 도전이 왔지만 상대가 진실이었음 → 카드 낸 사람의 손패가 이미 비어있으면 트로피 지급
@@ -1001,6 +1110,7 @@ export class SpiceHandler {
     const maxScore = Math.max(...playerResults.map((r) => r.score));
     const winners = playerResults.filter((r) => r.score === maxScore);
 
+    this.clearTurnTimer(room);
     room.gameStarted = false;
     room.gameFinished = true;
     room.gameOver = true;

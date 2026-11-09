@@ -10,6 +10,19 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-11-09 | **GitHub Actions 자동 배포 추가** (`.github/workflows/deploy.yml`) — main push(문서만 바뀐 경우 제외) 또는 수동 실행 시 amd64 이미지를 빌드해 GCP VM 컨테이너를 교체하고 `/api` 응답을 확인. 고정 SSH 키로 `deploy` 계정에 접속한다(VM의 guest agent가 멈춰 있어 gcloud 메타데이터 키는 적용되지 않음). Secrets: `VM_HOST`, `VM_SSH_USER`, `VM_SSH_KEY`, `VM_KNOWN_HOSTS`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`(`notify` job이 성공·실패·종료 코드를 텔레그램으로 전송, 없으면 건너뜀). 환경변수 원본은 VM의 `/home/deploy/.env.production`. 컨테이너 로그는 10MB × 3개로 제한. 배포하면 메모리의 방이 전부 사라진다 |
+| 2026-11-09 | **미처리 rejection으로 프로세스가 죽던 문제 수정** — 게이트웨이가 async 핸들러를 `return` 없이 호출해 Nest가 예외를 잡지 못했고, `{"event":"casinoStart"}`처럼 data 없는 메시지 하나로 Node 22가 종료됐음. `startGame`/`casinoStart`가 promise를 반환하도록 변경(새 async 핸들러도 반드시 `return`), `main.ts`에 `unhandledRejection` 로깅 추가, 카지노 방의 `startGame`은 Gang 핸들러로 넘기지 않음 |
+| 2026-11-09 | **스컬킹 10라운드 종료 수정** — 클라이언트는 마지막 라운드에 `skulkingNextRound`를 보내지 않아 `endGame`이 호출되지 않았음. `endRound`가 마지막 라운드면 5초 뒤 서버에서 직접 종료. `endGame`은 중복 실행을 막고 `gameStarted = false` 처리, `handleStartGame`은 `gameFinished`/`gameOver` 초기화 |
+| 2026-11-09 | `joinRoom`: 비밀번호 검사를 Case 1·2(재연결) 뒤로 이동 — 기존 멤버가 재연결할 때 거부되어 30초 뒤 퇴장되던 문제 수정. 신규 입장은 계속 검사 |
+| 2026-11-09 | 접속 인증 완료 시 `authenticated` 이벤트 전송(웹이 재입장 시점으로 사용). 토큰 검증 중 끊긴 소켓은 등록하지 않음 |
+| 2026-11-09 | `database/supabase-admin.ts`: 토큰 검증용 Supabase 클라이언트 싱글턴(`autoRefreshToken: false`). 기존엔 검증마다 `createClient`를 호출해 해제되지 않는 타이머가 인스턴스마다 쌓였음 |
+| 2026-10-08 | **Spice 턴 타이머를 서버로 이동** — 예전엔 턴 주인 클라이언트가 30초 후 직접 `pass`를 보냈고 서버엔 턴 타이머가 없어서, 턴 주인이 화면을 잠그거나 앱을 전환하면(iOS) 판이 영원히 멈췄음. `startTurn`/`clearTurnTimer`/`handleTurnTimeout` 추가, 턴이 바뀌는 4곳(`startMainGame`·`resolveChallengeExpired`·`applyPass`·`handleChallenge`)에서 `startTurn` 호출, 카드 낼 때·게임 종료 시 정지. `TURN_TIME_MS`(30초) + 1.5초 여유 후 자동 패스(`cardPassed.auto = true`) |
+| 2026-10-08 | Spice: 턴 주인이 방에서 빠지면(재연결 유예 초과) 퇴장 처리가 `playerOrder`에서만 지우고 `currentTurnPlayerId`는 남겨 판이 멈추던 문제 — 턴 시간 초과 시 남은 첫 플레이어에게 턴을 넘김 |
+| 2026-10-08 | Spice `handlePass`: 도전 페이즈 가드 추가 (`playCard`엔 있고 pass엔 없어서, 도전 중 카드 낸 사람의 pass가 통과해 카드를 더 받고 턴이 꼬였음). 패스 본체는 `applyPass`로 분리해 자동 패스와 공유. 자동 패스 직후 5초 안에 같은 사람이 보낸 늦은 pass는 에러 없이 무시 (구버전 클라 호환) |
+| 2026-10-08 | Spice 도전: `challengePhase` 브로드캐스트에 `challengeTimeLimitMs` 추가 (클라 카운트다운을 서버 데드라인에 맞추기 위함). 닫힌 페이즈에 온 도전은 `error`('도전 페이즈가 아닙니다' → 클라 alert) 대신 개인 `challengeTooLate` 전송 — 닫히는 경우는 만료 or 남이 먼저 도전뿐이라 사용자 잘못이 아님. `CHALLENGE_TIME_MS`/`TURN_TIME_MS` 상수화, 게이트웨이 재연결 남은시간 계산도 이 상수 사용 |
+| 2026-10-08 | **카지노 서버 검증 추가** (기존엔 클라이언트 값을 그대로 반영해 누구나 잔액·기록 조작 가능): `casinoStart` 초기자금/시간은 UI 선택지만 / `casinoBetPlace` 양의 정수만(음수 베팅이 잔액을 늘리던 버그) / `casinoResult`는 `0 ≤ delta ≤ 묶인 베팅액(casinoPendingStakes) × MAX_PAYOUT_MULTIPLIER[게임]`, `gameType`은 서버가 아는 현재 게임과 일치해야 함 / 게임 전환 시 묶인 베팅 몰수 / `casinoLoan`은 잔액 < 초기금 5%일 때만(반복 호출로 무제한 대출 가능했음) / `casinoForceEnd`는 서버에서 `isAdmin` 확인(아무나 판을 끝낼 수 있었음) |
+| 2026-10-08 | 레거시 독립 블랙잭 잔재 제거 — `game.types.ts`의 `bj*` 상태 필드·`BjHand`·`bjBotSockets`, `game.context.ts`의 봇 전용 방 정리 분기(`bjBotSockets`가 어디서도 할당되지 않아 실행된 적 없음). DB `game_type` 유니온의 `'blackjack'`은 과거 기록 호환용으로 유지 |
+| 2026-10-08 | **테스트 추가**: `casino.handler.spec.ts`(19), `spice.handler.spec.ts`(12), 공용 헬퍼 `test/game-test-utils.ts`(빌드 제외 위치). `npm test` |
 | 2026-08-13 | **Gang 결과 판정 버그 수정** |
 | 2026-08-13 | `game/games/gang/gang.handler.ts`: `evaluateHand`의 "하이카드" 폴백에서 `tiebreakers`가 보드 공유 카드까지 섞인 `allSorted` 기준으로 계산되던 버그 수정 — 내 카드만(`myCardsSorted`) 기준으로 변경, 미사용 `allSorted` 변수 제거. 이 값이 `checkWinCondition`(실제 성공/실패 판정)에 직접 쓰여서, 칩 번호 순서와 족보 순서가 실제로는 맞는데도 실패로 잘못 판정되는 버그가 있었음 |
 | 2026-08-13 | **구글 로그인 제거 → 아이디/닉네임/비밀번호 회원가입 전환** |
@@ -234,7 +247,7 @@ src/
 
 **클라이언트 → 서버:** `startGame`, `drawFirstCard`, `playCard`, `pass`, `challenge`, `readyNextRound`
 
-**서버 → 클라이언트:** `firstDrawStarted`, `firstDrawResult`, `firstDrawProgress`, `firstDrawFinished`, `gameStarted`, `cardPlayed`, `cardPassed`, `myHandUpdate`, `challengePhase`, `challengeExpired`, `challengeResult`, `spiceGameOver`
+**서버 → 클라이언트:** `firstDrawStarted`, `firstDrawResult`, `firstDrawProgress`, `firstDrawFinished`, `gameStarted`, `cardPassed`(`auto`: 서버 자동 패스 여부), `myHandUpdate`, `challengePhase`(`challengeTimeLimitMs` 포함), `challengeExpired`, `challengeResult`, `challengeTooLate`(개인, 한 발 늦은 도전), `spiceGameOver`
 
 ## Skulking 게임 이벤트
 
@@ -359,14 +372,19 @@ buildFirstDrawState()  // 선뽑기 단계 상태 계산
 buildSpiceState()      // Spice 게임 진행 상태 + 타이머 남은 시간 계산
 ```
 
-## 타이머 동기화
+## 타이머 동기화 / 턴 타이머 (Spice)
 
-`spice.handler.ts`에서 `currentTurnPlayerId`가 바뀌는 모든 지점에 `turnStartedAt = Date.now()` 설정:
+턴 제한은 **서버가 집행**한다. `currentTurnPlayerId`가 바뀌는 모든 지점에서 `startTurn(roomName, room)`을 호출한다 — `turnStartedAt = Date.now()` 기록 + `spiceTurnTimer` 재설정.
 - `startMainGame`: 게임 시작 시 첫 플레이어 턴
-- 카드 낼 때: `turnStartedAt = null` (도전 페이즈 중 턴 타이머 일시 중단)
+- 카드 낼 때: `turnStartedAt = null` + `clearTurnTimer` (도전 페이즈 중 턴 타이머 정지)
 - `resolveChallengeExpired`: 도전 페이즈 만료 후 다음 턴
-- `handlePass`: 패스 후 다음 턴
+- `applyPass`: 패스(사용자/자동) 후 다음 턴
 - `handleChallenge`: 도전 결과 후 패배자 턴
+- `finishSpiceGame`: `clearTurnTimer`
+
+`handleTurnTimeout`: `TURN_TIME_MS + TURN_TIMEOUT_GRACE_MS` 뒤 실행. 그 사이 턴이 넘어갔거나 도전 페이즈면 무시. 턴 주인이 `playerOrder`에 있으면 `applyPass(..., auto=true)`, 없으면(퇴장) `playerOrder[0]`에게 턴을 넘기고 `cardPassed(auto)` 브로드캐스트.
+
+> **새로 턴을 넘기는 코드를 추가할 때는 `turnStartedAt`을 직접 건드리지 말고 반드시 `startTurn`을 쓸 것.** 안 그러면 그 턴은 자동 패스가 안 걸려 판이 멈출 수 있다.
 
 ## Spice 도전 판정 로직
 

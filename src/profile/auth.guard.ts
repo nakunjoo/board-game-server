@@ -4,8 +4,8 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { createClient } from '@supabase/supabase-js';
 import type { Request } from 'express';
+import { getSupabaseAdmin } from '../database/supabase-admin';
 
 interface CacheEntry {
   userId: string;
@@ -40,12 +40,7 @@ export class SupabaseAuthGuard implements CanActivate {
       return true;
     }
 
-    const supabaseAdmin = createClient(
-      process.env.SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    );
-
-    const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+    const { data: { user }, error } = await getSupabaseAdmin().auth.getUser(token);
 
     if (error || !user) throw new UnauthorizedException('Invalid token');
 

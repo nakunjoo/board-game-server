@@ -16,6 +16,15 @@ import { DatabaseService } from '../../../database/database.service';
  *   casinoResult      - 게임 결과 반영 (delta)
  *   casinoSwitchGame  - 현재 플레이 중인 게임 변경
  *   casinoVoteEnd     - 조기 종료 투표
+ *   casinoLoan        - 긴급 대출 (잔액 < 초기금 5%일 때만)
+ *   casinoForceEnd    - 강제 종료 (관리자 전용)
+ *
+ * 서버 검증 (클라이언트를 믿지 않는 최소한의 경계):
+ *   - 시작 설정은 UI 선택지(ALLOWED_*) 안에서만
+ *   - 베팅은 양의 정수 & 잔액 이하, 결과 반영 전까지 casinoPendingStakes에 묶어둠
+ *   - 결과(delta)는 0 이상 & '묶인 베팅액 × 게임별 최대 배수' 이하
+ *   ※ 판 결과 자체(룰렛 숫자 등)는 클라이언트가 만들기 때문에 상한 안의 조작은
+ *     여전히 막을 수 없다. 완전히 막으려면 결과 생성을 서버로 옮겨야 한다.
  *
  * 이벤트 (서버 → 클라이언트):
  *   casinoStarted       - 게임 시작 알림
@@ -26,6 +35,25 @@ import { DatabaseService } from '../../../database/database.service';
  */
 @Injectable()
 export class CasinoHandler {
+  /** 설정 모달(웹·앱)이 제공하는 선택지 — 이 외의 값은 거부 */
+  static readonly ALLOWED_INITIAL_BALANCES = [1_000, 5_000, 10_000];
+  static readonly ALLOWED_TIME_LIMITS = [5 * 60, 10 * 60]; // 초
+
+  /**
+   * 미니게임별 최대 총수령 배수 (원금 포함, 베팅액 대비).
+   * casinoResult의 delta가 '결과 미반영 베팅액 × 이 배수'를 넘으면 거부한다.
+   * 클라이언트 배당표(웹·앱 동일)와 반드시 맞출 것.
+   */
+  static readonly MAX_PAYOUT_MULTIPLIER: Record<string, number> = {
+    roulette: 36, // 단일 숫자 35배 + 원금
+    slots: 100, // 7️⃣7️⃣7️⃣
+    blackjack: 2.5, // 내추럴 블랙잭 1.5배 + 원금 (더블은 베팅이 2번 잡혀 2배)
+    videopoker: 250, // 로열 플러시
+    horseracing: 4,
+    mines: 1000, // 15칸
+    baccarat: 9, // 타이 8:1 + 원금
+  };
+
   constructor(
     private readonly ctx: GameContext,
     private readonly supabase: DatabaseService,
@@ -62,6 +90,15 @@ export class CasinoHandler {
       return;
     }
 
+    if (!CasinoHandler.ALLOWED_INITIAL_BALANCES.includes(initialBalance)) {
+      this.ctx.sendToClient(client, 'error', { message: '허용되지 않은 초기 자금입니다' });
+      return;
+    }
+    if (timeLimit === null || !CasinoHandler.ALLOWED_TIME_LIMITS.includes(timeLimit)) {
+      this.ctx.sendToClient(client, 'error', { message: '허용되지 않은 게임 시간입니다' });
+      return;
+    }
+
     // Room 레벨 상태 초기화
     room.gameStarted = true;
     room.gameFinished = false;
@@ -81,6 +118,7 @@ export class CasinoHandler {
     room.state.casinoGamesPlayed = new Map();
     room.state.casinoVotes = new Set();
     room.state.casinoLoans = new Map();
+    room.state.casinoPendingStakes = new Map();
 
     const players: { playerId: string; nickname: string; balance: number; currentGame: null }[] = [];
 
@@ -173,6 +211,12 @@ export class CasinoHandler {
     const playerId = room.playerIds.get(client);
     if (!playerId) return;
 
+    // 음수·0·소수·NaN 베팅 차단 (음수를 허용하면 '차감'이 곧 '지급'이 된다)
+    if (!Number.isInteger(amount) || amount <= 0) {
+      this.ctx.sendToClient(client, 'error', { message: '유효하지 않은 베팅 금액입니다' });
+      return;
+    }
+
     const currentBalance = room.state.casinoBalances.get(playerId) ?? 0;
     if (amount > currentBalance) {
       this.ctx.sendToClient(client, 'error', { message: '잔액이 부족합니다' });
@@ -181,6 +225,10 @@ export class CasinoHandler {
 
     const newBalance = currentBalance - amount;
     room.state.casinoBalances.set(playerId, newBalance);
+
+    // 결과 반영 전까지 묶여 있는 베팅액 — casinoResult 상한 계산 기준
+    const pending = room.state.casinoPendingStakes?.get(playerId) ?? 0;
+    room.state.casinoPendingStakes?.set(playerId, pending + amount);
 
     const historyPoint = this.addHistoryPoint(room, playerId, newBalance);
 
@@ -209,8 +257,33 @@ export class CasinoHandler {
     const playerId = room.playerIds.get(client);
     if (!playerId) return;
 
+    // delta = 이번 판 총수령액(원금 포함, 0 이상). 게임 로직이 클라이언트에 있으므로
+    // 결과 자체를 검증할 수는 없지만, '실제로 건 돈 × 그 게임 최대 배수'를 넘는
+    // 금액은 어떤 정상 플레이로도 나올 수 없으므로 거부한다.
+    // gameType도 클라이언트 값이라, 서버가 알고 있는 '지금 하는 게임'과 같아야 한다
+    // (슬롯을 하면서 지뢰찾기 배수로 결과를 올리는 것 방지)
+    const currentGame = room.state.casinoCurrentGames?.get(playerId);
+    const maxMultiplier = CasinoHandler.MAX_PAYOUT_MULTIPLIER[gameType];
+    const pending = room.state.casinoPendingStakes?.get(playerId) ?? 0;
+    if (
+      currentGame !== gameType ||
+      maxMultiplier === undefined ||
+      !Number.isFinite(delta) ||
+      delta < 0 ||
+      delta > pending * maxMultiplier
+    ) {
+      const who = room.nicknames.get(client) ?? playerId;
+      console.warn(
+        `[Casino] Rejected result from '${who}' in '${roomName}': game=${gameType} delta=${delta} pending=${pending}`,
+      );
+      this.ctx.sendToClient(client, 'error', { message: '유효하지 않은 게임 결과입니다' });
+      return;
+    }
+    const payout = Math.floor(delta);
+    room.state.casinoPendingStakes?.set(playerId, 0);
+
     const currentBalance = room.state.casinoBalances.get(playerId) ?? 0;
-    const newBalance = Math.max(0, currentBalance + delta);
+    const newBalance = currentBalance + payout;
     room.state.casinoBalances.set(playerId, newBalance);
 
     // 게임 플레이 횟수 기록
@@ -223,7 +296,7 @@ export class CasinoHandler {
     this.ctx.broadcastToRoom(roomName, 'casinoBalanceUpdate', {
       playerId,
       balance: newBalance,
-      delta,
+      delta: payout,
       historyPoint,
     });
   }
@@ -246,6 +319,8 @@ export class CasinoHandler {
     if (!playerId) return;
 
     room.state.casinoCurrentGames.set(playerId, game);
+    // 판 도중에 나가면 건 돈은 몰수 — 묶인 베팅액이 다른 게임 결과 상한으로 넘어가지 않게 비운다
+    room.state.casinoPendingStakes?.set(playerId, 0);
 
     this.ctx.broadcastToRoom(roomName, 'casinoPlayerUpdate', {
       playerId,
@@ -316,13 +391,20 @@ export class CasinoHandler {
     const maxLoan = Math.floor(initialBalance / 2);
     const minLoan = 10;
 
-    if (amount < minLoan || amount > maxLoan) {
+    if (!Number.isInteger(amount) || amount < minLoan || amount > maxLoan) {
       this.ctx.sendToClient(client, 'error', { message: `대출 금액은 ${minLoan}~${maxLoan} 사이여야 합니다` });
       return;
     }
 
-    // 잔액에 대출금 추가
+    // 긴급 대출은 잔액이 초기금의 5% 미만일 때만 (웹·앱 대출 배너 노출 조건과 동일).
+    // 이 조건이 없으면 호출을 반복해 한도 없이 빌릴 수 있었다.
     const currentBalance = room.state.casinoBalances.get(playerId) ?? 0;
+    if (currentBalance >= initialBalance * 0.05) {
+      this.ctx.sendToClient(client, 'error', { message: '잔액이 충분해 대출을 받을 수 없습니다' });
+      return;
+    }
+
+    // 잔액에 대출금 추가
     const newBalance = currentBalance + amount;
     room.state.casinoBalances.set(playerId, newBalance);
 
@@ -351,10 +433,21 @@ export class CasinoHandler {
 
   // ── finishGame ────────────────────────────────────────────────
 
-  handleForceEnd(data: { roomName: string }, _client: WebSocket): void {
+  async handleForceEnd(data: { roomName: string }, client: WebSocket): Promise<void> {
     const { roomName } = data;
     const room = this.ctx.rooms.get(roomName);
-    if (!room || !room.gameStarted) return;
+    if (!room || !room.gameStarted || !room.clients.has(client)) return;
+
+    // UI는 관리자에게만 버튼을 보여주지만, 서버도 반드시 확인한다
+    const playerId = room.playerIds.get(client);
+    const isAdmin = playerId ? await this.supabase.isAdmin(playerId) : false;
+    if (!isAdmin) {
+      this.ctx.sendToClient(client, 'error', { message: '관리자만 강제 종료할 수 있습니다' });
+      return;
+    }
+    // await 사이에 타이머·투표로 이미 끝났을 수 있다
+    if (!room.gameStarted) return;
+
     if (room.casinoTimer) {
       clearTimeout(room.casinoTimer);
       room.casinoTimer = undefined;

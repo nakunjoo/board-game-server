@@ -9,7 +9,6 @@ import {
 } from '@nestjs/websockets';
 import { Server, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
-import { createClient } from '@supabase/supabase-js';
 import { GameEngineFactory } from './game-engine.factory';
 import { GameContext } from './game.context';
 import { GangHandler } from './games/gang/gang.handler';
@@ -17,6 +16,7 @@ import { SpiceHandler } from './games/spice/spice.handler';
 import { SkulkingHandler } from './games/skulking/skulking.handler';
 import { CasinoHandler } from './games/casino/casino.handler';
 import { DatabaseService } from '../database/database.service';
+import { getSupabaseAdmin } from '../database/supabase-admin';
 
 interface TokenCacheEntry {
   userId: string;
@@ -28,7 +28,7 @@ setInterval(() => {
   for (const [token, entry] of TOKEN_CACHE) {
     if (entry.expiresAt <= now) TOKEN_CACHE.delete(token);
   }
-}, 10 * 60 * 1000);
+}, 10 * 60 * 1000).unref();
 
 @WebSocketGateway({ path: '/ws' })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -51,11 +51,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const cached = TOKEN_CACHE.get(token);
     if (cached && cached.expiresAt > Date.now()) return cached.userId;
 
-    const supabaseAdmin = createClient(
-      process.env.SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    );
-    const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+    const { data: { user }, error } = await getSupabaseAdmin().auth.getUser(token);
     if (error || !user) return null;
 
     TOKEN_CACHE.set(token, { userId: user.id, expiresAt: Date.now() + 60 * 1000 });
@@ -81,10 +77,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
+    // 토큰 검증 중에 끊긴 소켓은 handleDisconnect가 이미 지나갔으므로 등록하면 남는다
+    if (client.readyState !== WebSocket.OPEN) return;
+
     this.ctx.clientAuth.set(client, userId);
     this.ctx.clients.add(client);
     this.ctx.clientRooms.set(client, new Set());
     console.log(`Client connected (${userId}). Total clients: ${this.ctx.clients.size}`);
+
+    // 클라이언트는 이 이벤트를 받은 뒤에 재입장(joinRoom)한다 — 인증 전 메시지는 거부되기 때문
+    this.ctx.sendToClient(client, 'authenticated', {});
   }
 
   handleDisconnect(client: WebSocket) {
@@ -242,13 +244,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    if (room.password && room.password !== password) {
-      this.ctx.sendToClient(client, 'error', {
-        message: '비밀번호가 일치하지 않습니다',
-      });
-      return;
-    }
-
     // ── 선뽑기 상태 계산 헬퍼 ──────────────────────────────────
     const buildFirstDrawState = () => {
       const isFirstDraw =
@@ -318,8 +313,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           }
         : null;
       const now = Date.now();
-      const TURN_TIME_MS = 30000;
-      const CHALLENGE_TIME_MS = 5000;
+      const TURN_TIME_MS = SpiceHandler.TURN_TIME_MS;
+      const CHALLENGE_TIME_MS = SpiceHandler.CHALLENGE_TIME_MS;
       const turnTimeLeft =
         room.state.turnStartedAt != null && !room.state.challengePhase
           ? Math.max(
@@ -470,6 +465,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ...firstDraw,
         ...skulking,
         ...casino,
+      });
+      return;
+    }
+
+    // ── 비밀번호 확인 ─────────────────────────────────────────
+    // 이미 방에 있는 플레이어(Case 1, 2)는 재연결이므로 묻지 않는다
+    if (room.password && room.password !== password) {
+      this.ctx.sendToClient(client, 'error', {
+        message: '비밀번호가 일치하지 않습니다',
       });
       return;
     }
@@ -719,14 +723,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody()
     data: { roomName: string; initialChips?: number; totalRounds?: number },
     @ConnectedSocket() client: WebSocket,
-  ): void {
+  ): void | Promise<void> {
+    // async 핸들러는 반드시 return 할 것 — 그래야 Nest가 rejection을 잡는다
     const gameType = this.getGameType(data.roomName);
+    if (gameType === 'casino') return; // 카지노는 casinoStart로 시작한다
     if (gameType === 'spice') {
-      this.spiceHandler.handleStartGame(data, client);
+      return this.spiceHandler.handleStartGame(data, client);
     } else if (gameType === 'skulking') {
-      this.skulkingHandler.handleStartGame(data, client);
+      return this.skulkingHandler.handleStartGame(data, client);
     } else {
-      this.gangHandler.handleStartGame(data, client);
+      return this.gangHandler.handleStartGame(data, client);
     }
   }
 
@@ -737,8 +743,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody()
     data: { roomName: string; timeLimit: number | null; initialBalance: number },
     @ConnectedSocket() client: WebSocket,
-  ): void {
-    this.casinoHandler.handleStart(data, client);
+  ): Promise<void> {
+    return this.casinoHandler.handleStart(data, client);
   }
 
   @SubscribeMessage('casinoBetPlace')
@@ -786,7 +792,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: WebSocket,
     @MessageBody() data: { roomName: string },
   ) {
-    this.casinoHandler.handleForceEnd(data, client);
+    await this.casinoHandler.handleForceEnd(data, client);
   }
 
   @SubscribeMessage('drawCard')

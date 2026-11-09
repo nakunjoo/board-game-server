@@ -65,6 +65,8 @@ export interface GameState {
   // 턴 관리 (Spice 게임)
   currentTurnPlayerId?: string; // 현재 턴인 playerId
   turnStartedAt?: number | null; // 현재 턴 시작 시각 (ms, 재연결 시 남은 시간 계산용)
+  spiceTurnTimer?: ReturnType<typeof setTimeout>; // 턴 시간 초과 시 서버 자동 패스
+  spiceLastAutoPass?: { playerId: string; at: number }; // 자동 패스 직후 도착한 구버전 클라 pass를 조용히 무시하기 위함
   currentSuit?: string | null; // 현재 선언된 향신료 (null = 첫 턴 or 리셋 후)
   currentNumber?: number; // 현재 선언된 숫자 (0 = 첫 턴)
   tableStack?: Card[]; // 현재 쌓인 카드 더미 (실제 카드)
@@ -126,33 +128,8 @@ export interface GameState {
   casinoGamesPlayed?: Map<string, Record<string, number>>; // playerId → 게임별 플레이 횟수
   casinoVotes?: Set<string>; // 조기 종료 투표한 playerId
   casinoLoans?: Map<string, number>; // playerId → 총 대출금액 누적
+  casinoPendingStakes?: Map<string, number>; // playerId → 결과 미반영 베팅액 (casinoResult 상한 검증용)
 
-  // 블랙잭 전용
-  bjRoundHistory?: Array<{
-    round: number;
-    results: Array<{ playerId: string; bet: number; chipDelta: number; chipsAfter: number; result: 'win' | 'lose' | 'push' | 'blackjack' | 'bust' }>;
-  }>;
-  bjPhase?: 'betting' | 'action' | 'dealer' | 'result'; // 현재 페이즈
-  bjBets?: Map<string, number>; // playerId → 이번 라운드 최초 베팅
-  bjChips?: Map<string, number>; // playerId → 보유 칩
-  bjPlayerHands?: Map<string, BjHand[]>; // playerId → 핸드 배열 (스플릿 시 2개)
-  bjDealerHand?: Card[]; // 딜러 공개 카드
-  bjDealerHoleCard?: Card | null; // 딜러 홀카드 (비공개, 딜러 페이즈 전까지 null)
-  bjActionDone?: Set<string>; // 액션 완료한 playerId
-  bjBettingDone?: Set<string>; // 베팅 완료한 playerId
-  bjActionTimer?: ReturnType<typeof setTimeout>; // 30초 액션 타이머
-  bjActionTimerStartedAt?: number | null; // 타이머 시작 시각 (ms, 재연결 동기화용)
-  bjCurrentRound?: number; // 현재 라운드 번호 (1부터 시작)
-  bjNextRoundReady?: Set<string>; // 다음 라운드 준비 완료한 playerId
-}
-
-// 블랙잭 핸드 (스플릿 시 2개)
-export interface BjHand {
-  cards: Card[];
-  bet: number; // 핸드별 베팅 (더블/스플릿으로 증가)
-  status: 'active' | 'stand' | 'bust' | 'blackjack' | 'doubled';
-  result?: 'win' | 'lose' | 'push';
-  payout?: number; // 결산 후 실제 지급액 (베팅액 포함)
 }
 
 export interface PlayerResult {
@@ -183,10 +160,6 @@ export interface Room {
   sessionStartedAt?: number; // 게임 시작 시각 (ms, duration 계산용)
   pendingAbandonedPlayerIds?: string[]; // sessionId 확정 전 이탈한 playerId 큐
   voiceParticipants?: Map<string, { playerId: string; nickname: string }>; // 음성 통화 참여자
-  bjInitialChips?: number; // 블랙잭: 게임 시작 시 지급 칩 수
-  bjTotalRounds?: number; // 블랙잭: 총 라운드 수
-  bjStartedAt?: number; // 블랙잭: 게임 시작 타임스탬프 (ms)
-  bjBotSockets?: Set<WebSocket>; // 봇 소켓 마커 (가짜 WS 식별용)
   casinoInitialBalance?: number; // 카지노: 게임 시작 시 지급 잔액
   casinoTimeLimit?: number | null; // 카지노: 시간 제한 (분, null=무제한)
   casinoStartedAt?: number; // 카지노: 게임 시작 타임스탬프 (ms)
