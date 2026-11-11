@@ -371,6 +371,19 @@ export class GangHandler {
 
     if (!room.gameStarted) return;
 
+    // 혼자 남으면 협동이 성립하지 않는다. 판을 접고 대기 상태로 돌아간다
+    if (room.clients.size === 1) {
+      room.gameStarted = false;
+      room.gameFinished = false;
+      room.gameOver = false;
+      room.gameOverResult = null;
+      room.lastGameResults = undefined;
+      room.state.playerReady.clear();
+      room.state.nextRoundReady.clear();
+      this.ctx.broadcastToRoom(room.name, 'gangGameCancelled', { roomName: room.name });
+      return;
+    }
+
     if (room.gameFinished) {
       this.reconcileNextRoundReady(room);
       return;

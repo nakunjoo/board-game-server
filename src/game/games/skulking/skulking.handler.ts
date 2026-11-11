@@ -491,7 +491,9 @@ export class SkulkingHandler {
       // 이 트릭이 끝나기 전에 나가도 결과에 닉네임을 보여주기 위해 저장한다
       nickname: this.ctx.getNicknameByPlayerId(room, playerId),
       card,
-      tigressDeclared: tigressDeclared as 'escape' | 'pirate' | undefined,
+      // 다른 카드에 붙여 보낸 선언은 버린다 (화면에 E/P 표시가 붙는다)
+      tigressDeclared:
+        card.type === 'sk-tigress' ? (tigressDeclared as 'escape' | 'pirate') : undefined,
     };
     currentTrick.push(trickEntry);
 
@@ -500,7 +502,7 @@ export class SkulkingHandler {
       playerId,
       nickname: this.ctx.getNicknameByPlayerId(room, playerId),
       card,
-      tigressDeclared,
+      tigressDeclared: trickEntry.tigressDeclared,
       currentTrick: currentTrick.map((e) => ({
         playerId: e.playerId,
         nickname: e.nickname ?? this.ctx.getNicknameByPlayerId(room, e.playerId),

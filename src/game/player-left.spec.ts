@@ -140,6 +140,19 @@ describe('플레이어 이탈과 게임별 진행', () => {
       expect(deal).toHaveBeenCalledTimes(1);
     });
 
+    it('혼자 남으면 게임을 접고 대기 상태로 돌아간다', () => {
+      const deal = jest.fn();
+      (handler as any).dealNewRound = deal;
+      room.gameStarted = true;
+      room.gameFinished = true;
+      room.state.nextRoundReady = new Set(['A']);
+      leave(c, 'C');
+      leave(b, 'B');
+      expect(deal).not.toHaveBeenCalled();
+      expect(room.gameStarted).toBe(false);
+      expect(receivedEvent(a, 'gangGameCancelled')).toHaveLength(1);
+    });
+
     it('라운드가 끝난 뒤의 칩 선택과 준비는 무시한다', () => {
       room.gameStarted = true;
       room.gameFinished = true;

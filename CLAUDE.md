@@ -10,6 +10,7 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-11-11 | Gang: 진행 중 혼자 남으면 판을 접고 대기 상태로 돌아가 `gangGameCancelled`를 보낸다(혼자서 다음 라운드가 시작되던 문제, 앱 미반영). Skulking: `tigressDeclared`는 Tigress 카드일 때만 저장·전송 |
 | 2026-11-09 | **새로고침 후속** — 유예 중 재입장 때 `userJoined` 닉네임을 클라이언트 값 대신 방에 저장된 값으로 보냄(프로필 응답 전 로그인 ID가 노출되던 문제). `buildSkulkingState`에 `skulkingNextRoundTimeLeft`(`skulkingNextRoundAt` 기준), `buildCasinoState`에 `casinoPendingStake` 추가 |
 | 2026-11-09 | **재검사 후속** — Skulking 재시작 시 `skulkingRound` 초기화, 10라운드 종료 대기 타이머를 `skulkingNextRoundTimer`로 관리해 재시작 때 해제, 트릭 항목에 닉네임 저장. Spice·Skulking은 선뽑기 중 혼자 남으면 `firstDrawCancelled`/`skulkingFirstDrawCancelled`로 대기 상태 복귀(앱 미반영). 종료 결과 복원은 그 판 참가자에게만. Casino 이탈 시 투표 재계산 |
 | 2026-11-09 | **이탈 처리와 방장 위임** — `GameContext.leaveRoom`이 방장을 접속 중인 다음 사람에게 넘기고 `userLeft`에 `hostPlayerId`/`hostNickname`을 싣는다. 게이트웨이 `removeFromRoom`이 나가기·끊김 유예 만료·강퇴 뒤 게임별 `handlePlayerLeft`를 호출해 준비 집계, 선뽑기, 턴, 도전 페이즈, 비드, 트릭 순서를 다시 맞춘다. 방이 비면 타이머를 모두 해제. `replaceClient`는 Map 순서를 유지 |
