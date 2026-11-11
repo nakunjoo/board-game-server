@@ -364,7 +364,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (oldClient) this.ctx.replaceClient(room, oldClient, client);
 
       this.ctx.clientRooms.get(client)?.add(name);
-      console.log(`'${nickname}' (${playerId}) reconnected to room '${name}'`);
+      // 새로고침 직후 프로필이 늦으면 클라이언트가 로그인 ID를 보내므로 방에 저장된 닉네임을 쓴다
+      const knownNickname = this.ctx.getNicknameByPlayerId(room, playerId);
+      console.log(`'${knownNickname}' (${playerId}) reconnected to room '${name}'`);
 
       const players = this.ctx.getPlayersWithOrder(room);
       const order = players.find((p) => p.playerId === playerId)?.order ?? 0;
@@ -408,7 +410,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           roomName: name,
           memberCount: room.clients.size,
           playerId,
-          nickname,
+          nickname: knownNickname,
           order,
           players,
         },

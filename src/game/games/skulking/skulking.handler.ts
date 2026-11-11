@@ -174,6 +174,7 @@ export class SkulkingHandler {
       clearTimeout(room.state.skulkingNextRoundTimer);
       room.state.skulkingNextRoundTimer = undefined;
     }
+    room.state.skulkingNextRoundAt = undefined;
   }
 
   // ── 플레이어 이탈 ─────────────────────────────────────────
@@ -852,6 +853,7 @@ export class SkulkingHandler {
       }, GAME_OVER_DELAY_MS);
     } else {
       // 방장 브라우저에 맡기면 방장이 나가거나 새로고침할 때 게임이 멈춘다
+      room.state.skulkingNextRoundAt = Date.now() + NEXT_ROUND_DELAY_MS;
       room.state.skulkingNextRoundTimer = setTimeout(() => {
         if (this.ctx.rooms.get(roomName) === room && room.gameStarted && !room.state.skulkingPhase) {
           this.advanceRound(roomName);
@@ -1198,6 +1200,11 @@ export class SkulkingHandler {
       timerTimeLeft = Math.max(0, PLAY_TIME_LIMIT - elapsed);
     }
 
+    const nextRoundMsLeft =
+      !room.state.skulkingPhase && room.state.skulkingNextRoundAt
+        ? room.state.skulkingNextRoundAt - Date.now()
+        : 0;
+
     return {
       skulkingRound: room.state.skulkingRound,
       skulkingPhase: room.state.skulkingPhase,
@@ -1210,6 +1217,7 @@ export class SkulkingHandler {
       skulkingLeadPlayerId: room.state.skulkingLeadPlayerId ?? null,
       skulkingTrickOrder: room.state.skulkingTrickOrder ?? [],
       skulkingTimerTimeLeft: timerTimeLeft,
+      skulkingNextRoundTimeLeft: nextRoundMsLeft > 0 ? Math.ceil(nextRoundMsLeft / 1000) : null,
       currentTrick: (room.state.currentTrick ?? []).map((e) => ({
         playerId: e.playerId,
         card: e.card,

@@ -92,6 +92,7 @@ export interface GameState {
   skulkingFirstDrawPool?: number[]; // 남은 숫자 풀 (1~10 셔플)
   skulkingFirstDrawTimer?: ReturnType<typeof setTimeout>; // 안 뽑은 사람 자동 뽑기
   skulkingNextRoundTimer?: ReturnType<typeof setTimeout>; // 라운드 결과 후 다음 라운드 시작
+  skulkingNextRoundAt?: number; // 다음 라운드 시작 예정 시각 (ms, 재연결 카운트다운 복원용)
 
   // 스컬킹 게임 전용
   skulkingRound?: number; // 현재 라운드 (1~10)

@@ -665,6 +665,7 @@ export class CasinoHandler {
       casinoMyHistory: allHistories[playerId] ?? [],
       casinoAllHistories: allHistories,
       casinoVotes: Array.from(room.state.casinoVotes ?? []),
+      casinoPendingStake: room.state.casinoPendingStakes?.get(playerId) ?? 0,
     };
   }
 
