@@ -10,7 +10,7 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
-| 2026-11-13 | **그림 맞히기(`drawing`) 추가** — `games/drawing/drawing.handler.ts`·`drawing.words.ts`(제시어 약 300개). 제시어 선택·그림 중계·정답 판정·점수·힌트·타이머 모두 서버. 게이트웨이: `drawingStart`/`drawingChoose`/`drawingStroke`/`drawingGuess` 등록, 덱 없는 게임으로 방 생성, `startGame`은 무시, 끊김/재접속 때 `handleDisconnect`/`handleReconnect`, `roomJoined`에 `buildDrawingState`. `game.types.ts`에 `DrawingState`/`DrawingStroke`, `Room.drawing`/`drawingGameOverResult`. DB `game_type`에 `'drawing'` 추가 필요(SUPABASE_SCHEMA.md 마이그레이션) — 넣기 전엔 세션 기록만 실패하고 게임은 된다 |
+| 2026-11-13 | **끄적끄적(`drawing`) 추가** — `games/drawing/drawing.handler.ts`·`drawing.words.ts`(제시어 약 300개). 제시어 선택·그림 중계·정답 판정·점수·힌트·타이머 모두 서버. 게이트웨이: `drawingStart`/`drawingChoose`/`drawingStroke`/`drawingGuess` 등록, 덱 없는 게임으로 방 생성, `startGame`은 무시, 끊김/재접속 때 `handleDisconnect`/`handleReconnect`, `roomJoined`에 `buildDrawingState`. `game.types.ts`에 `DrawingState`/`DrawingStroke`, `Room.drawing`/`drawingGameOverResult`. DB `game_type`에 `'drawing'` 추가 필요(SUPABASE_SCHEMA.md 마이그레이션) — 넣기 전엔 세션 기록만 실패하고 게임은 된다 |
 | 2026-11-11 | Gang: 진행 중 혼자 남으면 판을 접고 대기 상태로 돌아가 `gangGameCancelled`를 보낸다(혼자서 다음 라운드가 시작되던 문제, 앱 미반영). Skulking: `tigressDeclared`는 Tigress 카드일 때만 저장·전송 |
 | 2026-11-09 | **새로고침 후속** — 유예 중 재입장 때 `userJoined` 닉네임을 클라이언트 값 대신 방에 저장된 값으로 보냄(프로필 응답 전 로그인 ID가 노출되던 문제). `buildSkulkingState`에 `skulkingNextRoundTimeLeft`(`skulkingNextRoundAt` 기준), `buildCasinoState`에 `casinoPendingStake` 추가 |
 | 2026-11-09 | **재검사 후속** — Skulking 재시작 시 `skulkingRound` 초기화, 10라운드 종료 대기 타이머를 `skulkingNextRoundTimer`로 관리해 재시작 때 해제, 트릭 항목에 닉네임 저장. Spice·Skulking은 선뽑기 중 혼자 남으면 `firstDrawCancelled`/`skulkingFirstDrawCancelled`로 대기 상태 복귀(앱 미반영). 종료 결과 복원은 그 판 참가자에게만. Casino 이탈 시 투표 재계산 |
@@ -281,7 +281,7 @@ src/
 | `skulkingRoundResult` | 라운드 결과 (round, bids, tricks, roundScores, totalScores, roundScoreHistory, **roundBidTrickHistory**, isLastRound) |
 | `skulkingGameOver` | 최종 결과 (finalScores, ranking, roundScoreHistory) |
 
-## 그림 맞히기 (`drawing.handler.ts`)
+## 끄적끄적 (`drawing.handler.ts`)
 
 3~6명(관리자는 우회). 한 명씩 돌아가며 그리고, 모두 한 번씩 그리면 한 바퀴. 방장이 `drawingStart`로 바퀴 수(1/2/3)와 그리는 시간(60/80/100초)을 정한다.
 

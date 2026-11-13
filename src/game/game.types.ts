@@ -136,7 +136,7 @@ export interface GameState {
   casinoPendingStakes?: Map<string, number>; // playerId → 결과 미반영 베팅액 (casinoResult 상한 검증용)
 }
 
-/** 그림 맞히기: 선 하나. 좌표는 그림판 크기와 무관하게 0~1000 정수 [x0, y0, x1, y1, ...] */
+/** 끄적끄적: 선 하나. 좌표는 그림판 크기와 무관하게 0~1000 정수 [x0, y0, x1, y1, ...] */
 export interface DrawingStroke {
   id: number;
   color: string;
@@ -144,7 +144,7 @@ export interface DrawingStroke {
   points: number[];
 }
 
-/** 그림 맞히기 진행 상태 (게임 중에만 있음) */
+/** 끄적끄적 진행 상태 (게임 중에만 있음) */
 export interface DrawingState {
   totalRounds: number;
   drawTimeSec: number;

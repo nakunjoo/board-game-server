@@ -317,7 +317,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return this.casinoHandler.buildCasinoState(room, playerId);
     };
 
-    // ── 그림 맞히기 재연결 공통 필드 ──────────────────────────
+    // ── 끄적끄적 재연결 공통 필드 ──────────────────────────
     const buildDrawingState = () => {
       if (room.gameType !== 'drawing') return {};
       return this.drawingHandler.buildDrawingState(room, playerId);
@@ -807,7 +807,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): void | Promise<void> {
     // async 핸들러는 반드시 return 할 것 — 그래야 Nest가 rejection을 잡는다
     const gameType = this.getGameType(data.roomName);
-    // 카지노는 casinoStart, 그림 맞히기는 drawingStart로 시작한다
+    // 카지노는 casinoStart, 끄적끄적는 drawingStart로 시작한다
     if (gameType === 'casino' || gameType === 'drawing') return;
     if (gameType === 'spice') {
       return this.spiceHandler.handleStartGame(data, client);
@@ -1031,7 +1031,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.skulkingHandler.handleTestStart(data, client);
   }
 
-  // ── 그림 맞히기 전용 이벤트 ───────────────────────────────
+  // ── 끄적끄적 전용 이벤트 ───────────────────────────────
 
   @SubscribeMessage('drawingStart')
   handleDrawingStart(

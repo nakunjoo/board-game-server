@@ -13,7 +13,7 @@ type StrokeOp =
   | { t: 'x' }; // 전체 지우기
 
 /**
- * '그림 맞히기' 게임 핸들러
+ * '끄적끄적'(그림 맞히기) 게임 핸들러
  *
  * 한 명이 제시어를 고르고 그리면 나머지가 채팅으로 맞힌다. 모두 한 번씩 그리면 한 바퀴.
  * 정답 판정·점수·타이머는 모두 서버가 한다. 클라이언트 타이머는 표시용.
@@ -112,7 +112,7 @@ export class DrawingHandler {
       : false;
     if (!adminBypass && room.clients.size < DrawingHandler.MIN_PLAYERS) {
       this.ctx.sendToClient(client, 'error', {
-        message: `그림 맞히기는 최소 ${DrawingHandler.MIN_PLAYERS}명이 필요합니다`,
+        message: `끄적끄적은 최소 ${DrawingHandler.MIN_PLAYERS}명이 필요합니다`,
       });
       return;
     }
