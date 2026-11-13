@@ -42,7 +42,7 @@ CREATE TRIGGER on_auth_user_created
 CREATE TABLE game_sessions (
   id              uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
   room_name       text NOT NULL,
-  game_type       text NOT NULL CHECK (game_type IN ('gang', 'spice', 'skulking')),
+  game_type       text NOT NULL CHECK (game_type IN ('gang', 'spice', 'skulking', 'minesweeper', 'slide-puzzle', 'blackjack', 'casino', 'drawing')),
   played_at       timestamptz NOT NULL DEFAULT now(),
   duration_sec    int,
   player_count    int NOT NULL,

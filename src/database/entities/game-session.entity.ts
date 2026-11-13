@@ -16,7 +16,7 @@ export class GameSession {
   roomName: string;
 
   @Column({ name: 'game_type', type: 'text' })
-  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle' | 'blackjack' | 'casino';
+  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle' | 'blackjack' | 'casino' | 'drawing';
 
   @CreateDateColumn({ name: 'played_at' })
   playedAt: Date;

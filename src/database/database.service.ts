@@ -7,7 +7,7 @@ import { Admin } from './entities/admin.entity';
 
 export interface CreateSessionParams {
   roomName: string;
-  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle' | 'blackjack' | 'casino';
+  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle' | 'blackjack' | 'casino' | 'drawing';
   playerCount: number;
   totalRounds?: number;
 }

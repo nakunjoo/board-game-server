@@ -134,7 +134,40 @@ export interface GameState {
   casinoVotes?: Set<string>; // 조기 종료 투표한 playerId
   casinoLoans?: Map<string, number>; // playerId → 총 대출금액 누적
   casinoPendingStakes?: Map<string, number>; // playerId → 결과 미반영 베팅액 (casinoResult 상한 검증용)
+}
 
+/** 그림 맞히기: 선 하나. 좌표는 그림판 크기와 무관하게 0~1000 정수 [x0, y0, x1, y1, ...] */
+export interface DrawingStroke {
+  id: number;
+  color: string;
+  size: number; // 그림판 폭의 1/1000 단위
+  points: number[];
+}
+
+/** 그림 맞히기 진행 상태 (게임 중에만 있음) */
+export interface DrawingState {
+  totalRounds: number;
+  drawTimeSec: number;
+  round: number; // 1부터
+  turnOrder: string[]; // 그리는 순서 (playerId, 시작 때 고정)
+  turnIndex: number;
+  phase: 'choose' | 'draw' | 'reveal';
+  drawerId: string;
+  choices: string[]; // 그리는 사람에게만 보이는 제시어 후보
+  word: string | null;
+  phaseStartedAt: number;
+  phaseEndsAt: number;
+  timer?: ReturnType<typeof setTimeout>; // 현재 페이즈 종료
+  hintTimers: ReturnType<typeof setTimeout>[];
+  hint: (string | null)[]; // 글자별 공개 상태 (null = 가림)
+  strokes: DrawingStroke[];
+  pointCount: number;
+  guessed: string[]; // 맞힌 순서
+  scores: Map<string, number>;
+  turnGains: Map<string, number>; // 이번 턴에 얻은 점수
+  usedWords: Set<string>;
+  drawerAwayTimer?: ReturnType<typeof setTimeout>; // 그리는 사람이 끊긴 지 10초면 턴 종료
+  nicknames: Map<string, string>; // 중간에 나간 사람도 결과에 이름이 남게
 }
 
 export interface PlayerResult {
@@ -178,4 +211,14 @@ export interface Room {
   };
   skulkingGameOverResult?: { ranking: { playerId: string }[] };
   casinoLastResult?: { players: { playerId: string }[] };
+  drawing?: DrawingState;
+  drawingGameOverResult?: {
+    reason: 'finished' | 'notEnough';
+    ranking: {
+      playerId: string;
+      nickname: string;
+      score: number;
+      rank: number;
+    }[];
+  };
 }

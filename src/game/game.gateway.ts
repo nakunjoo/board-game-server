@@ -15,6 +15,7 @@ import { GangHandler } from './games/gang/gang.handler';
 import { SpiceHandler } from './games/spice/spice.handler';
 import { SkulkingHandler } from './games/skulking/skulking.handler';
 import { CasinoHandler } from './games/casino/casino.handler';
+import { DrawingHandler } from './games/drawing/drawing.handler';
 import { DatabaseService } from '../database/database.service';
 import { getSupabaseAdmin } from '../database/supabase-admin';
 
@@ -23,12 +24,15 @@ interface TokenCacheEntry {
   expiresAt: number;
 }
 const TOKEN_CACHE = new Map<string, TokenCacheEntry>();
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, entry] of TOKEN_CACHE) {
-    if (entry.expiresAt <= now) TOKEN_CACHE.delete(token);
-  }
-}, 10 * 60 * 1000).unref();
+setInterval(
+  () => {
+    const now = Date.now();
+    for (const [token, entry] of TOKEN_CACHE) {
+      if (entry.expiresAt <= now) TOKEN_CACHE.delete(token);
+    }
+  },
+  10 * 60 * 1000,
+).unref();
 
 @WebSocketGateway({ path: '/ws' })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -42,6 +46,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly spiceHandler: SpiceHandler,
     private readonly skulkingHandler: SkulkingHandler,
     private readonly casinoHandler: CasinoHandler,
+    private readonly drawingHandler: DrawingHandler,
     private readonly supabase: DatabaseService,
   ) {}
 
@@ -51,10 +56,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const cached = TOKEN_CACHE.get(token);
     if (cached && cached.expiresAt > Date.now()) return cached.userId;
 
-    const { data: { user }, error } = await getSupabaseAdmin().auth.getUser(token);
+    const {
+      data: { user },
+      error,
+    } = await getSupabaseAdmin().auth.getUser(token);
     if (error || !user) return null;
 
-    TOKEN_CACHE.set(token, { userId: user.id, expiresAt: Date.now() + 60 * 1000 });
+    TOKEN_CACHE.set(token, {
+      userId: user.id,
+      expiresAt: Date.now() + 60 * 1000,
+    });
     return user.id;
   }
 
@@ -72,7 +83,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const userId = await this.validateToken(token);
     if (!userId) {
-      this.ctx.sendToClient(client, 'error', { message: '인증에 실패했습니다' });
+      this.ctx.sendToClient(client, 'error', {
+        message: '인증에 실패했습니다',
+      });
       client.close();
       return;
     }
@@ -83,7 +96,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.ctx.clientAuth.set(client, userId);
     this.ctx.clients.add(client);
     this.ctx.clientRooms.set(client, new Set());
-    console.log(`Client connected (${userId}). Total clients: ${this.ctx.clients.size}`);
+    console.log(
+      `Client connected (${userId}). Total clients: ${this.ctx.clients.size}`,
+    );
 
     // 클라이언트는 이 이벤트를 받은 뒤에 재입장(joinRoom)한다 — 인증 전 메시지는 거부되기 때문
     this.ctx.sendToClient(client, 'authenticated', {});
@@ -104,7 +119,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           // DB: 게임 중 이탈 처리
           if (room.gameStarted) {
             if (room.supabaseSessionId) {
-              this.supabase.markAbandoned(room.supabaseSessionId, playerId, 'disconnected');
+              this.supabase.markAbandoned(
+                room.supabaseSessionId,
+                playerId,
+                'disconnected',
+              );
             } else {
               room.pendingAbandonedPlayerIds ??= [];
               room.pendingAbandonedPlayerIds.push(`disconnected:${playerId}`);
@@ -117,6 +136,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }, GameContext.DISCONNECT_GRACE_MS);
 
         room.disconnectTimers.set(playerId, timer);
+        if (room.gameType === 'drawing')
+          this.drawingHandler.handleDisconnect(room, playerId);
         console.log(
           `'${playerId}' disconnected from '${roomName}', waiting ${GameContext.DISCONNECT_GRACE_MS}ms for reconnect`,
         );
@@ -156,7 +177,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    const deck = gameType === 'casino' ? [] : this.engineFactory.get(gameType).createDeck();
+    // 카드를 쓰지 않는 게임
+    const deck =
+      gameType === 'casino' || gameType === 'drawing'
+        ? []
+        : this.engineFactory.get(gameType).createDeck();
 
     const room = {
       name,
@@ -251,7 +276,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const myDrawnNumber = room.state.firstDraw?.get(playerId) ?? null;
       const drawnCount = room.state.firstDrawDone?.size ?? 0;
       const firstDrawFinished = isFirstDraw && drawnCount === room.clients.size;
-      let firstDrawResults: Record<string, number> = {};
+      const firstDrawResults: Record<string, number> = {};
       let firstPlayerId: string | null = null;
       let firstNickname: string | null = null;
       if (firstDrawFinished && room.state.firstDraw) {
@@ -283,13 +308,19 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // ── Skulking 재연결 공통 필드 ─────────────────────────────
     const buildSkulkingState = () => {
       if (room.gameType !== 'skulking') return {};
-      return this.skulkingHandler.buildSkulkingState(room, playerId!);
+      return this.skulkingHandler.buildSkulkingState(room, playerId);
     };
 
     // ── Casino 재연결 공통 필드 ───────────────────────────────
     const buildCasinoState = () => {
       if (room.gameType !== 'casino') return {};
-      return this.casinoHandler.buildCasinoState(room, playerId!);
+      return this.casinoHandler.buildCasinoState(room, playerId);
+    };
+
+    // ── 그림 맞히기 재연결 공통 필드 ──────────────────────────
+    const buildDrawingState = () => {
+      if (room.gameType !== 'drawing') return {};
+      return this.drawingHandler.buildDrawingState(room, playerId);
     };
 
     // ── Spice 재연결 공통 필드 ─────────────────────────────────
@@ -297,7 +328,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const wonCardsMap = room.state.wonCards ?? new Map<string, unknown[]>();
       const wonCardCounts: Record<string, number> = {};
       for (const [pid, cards] of wonCardsMap.entries())
-        wonCardCounts[pid] = (cards as unknown[]).length;
+        wonCardCounts[pid] = cards.length;
       const challengePhase = room.state.challengePhase
         ? {
             playerId: room.state.challengePhase.playerId,
@@ -321,7 +352,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
               0,
               // 도전 결과 표시 중에는 시작 시각이 미래라 제한시간을 넘지 않게 자른다
               Math.round(
-                Math.min(TURN_TIME_MS, TURN_TIME_MS - (now - room.state.turnStartedAt)) / 1000,
+                Math.min(
+                  TURN_TIME_MS,
+                  TURN_TIME_MS - (now - room.state.turnStartedAt),
+                ) / 1000,
               ),
             )
           : null;
@@ -345,7 +379,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           ? Object.fromEntries(room.state.trophies)
           : {},
         wonCardCounts,
-        wonCards: { [playerId!]: wonCardsMap.get(playerId!) ?? [] },
+        wonCards: { [playerId]: wonCardsMap.get(playerId) ?? [] },
         spiceGameOverMeta: room.spiceGameOverMeta,
         challengePhase,
         turnTimeLeft,
@@ -366,7 +400,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.ctx.clientRooms.get(client)?.add(name);
       // 새로고침 직후 프로필이 늦으면 클라이언트가 로그인 ID를 보내므로 방에 저장된 닉네임을 쓴다
       const knownNickname = this.ctx.getNicknameByPlayerId(room, playerId);
-      console.log(`'${knownNickname}' (${playerId}) reconnected to room '${name}'`);
+      console.log(
+        `'${knownNickname}' (${playerId}) reconnected to room '${name}'`,
+      );
 
       const players = this.ctx.getPlayersWithOrder(room);
       const order = players.find((p) => p.playerId === playerId)?.order ?? 0;
@@ -374,6 +410,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const firstDraw = buildFirstDrawState();
       const skulking = buildSkulkingState();
       const casino = buildCasinoState();
+      const drawing = buildDrawingState();
 
       this.ctx.sendToClient(client, 'roomJoined', {
         name,
@@ -401,7 +438,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ...firstDraw,
         ...skulking,
         ...casino,
+        ...drawing,
       });
+
+      if (room.gameType === 'drawing')
+        this.drawingHandler.handleReconnect(room, playerId);
 
       this.ctx.broadcastToRoom(
         name,
@@ -444,6 +485,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const firstDraw = buildFirstDrawState();
       const skulking = buildSkulkingState();
       const casino = buildCasinoState();
+      const drawing = buildDrawingState();
 
       this.ctx.sendToClient(client, 'roomJoined', {
         name,
@@ -471,6 +513,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ...firstDraw,
         ...skulking,
         ...casino,
+        ...drawing,
       });
       return;
     }
@@ -511,6 +554,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const firstDraw = buildFirstDrawState();
     const skulking = buildSkulkingState();
     const casino = buildCasinoState();
+    const drawing = buildDrawingState();
 
     this.ctx.sendToClient(client, 'roomJoined', {
       name,
@@ -538,6 +582,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       ...firstDraw,
       ...skulking,
       ...casino,
+      ...drawing,
     });
 
     this.ctx.broadcastToRoom(
@@ -586,11 +631,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         this.skulkingHandler.handlePlayerLeft(room, playerId);
       } else if (room.gameType === 'casino') {
         this.casinoHandler.handlePlayerLeft(room, playerId);
+      } else if (room.gameType === 'drawing') {
+        this.drawingHandler.handlePlayerLeft(room, playerId);
       } else {
         this.gangHandler.handlePlayerLeft(room, playerId);
       }
     } catch (e) {
-      console.error(`Failed to reconcile '${roomName}' after '${playerId}' left`, e);
+      console.error(
+        `Failed to reconcile '${roomName}' after '${playerId}' left`,
+        e,
+      );
     }
   }
 
@@ -604,7 +654,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const playerId = room.playerIds.get(client);
       if (playerId) {
         if (room.supabaseSessionId) {
-          this.supabase.markAbandoned(room.supabaseSessionId, playerId, 'voluntary');
+          this.supabase.markAbandoned(
+            room.supabaseSessionId,
+            playerId,
+            'voluntary',
+          );
         } else {
           room.pendingAbandonedPlayerIds ??= [];
           room.pendingAbandonedPlayerIds.push(`voluntary:${playerId}`);
@@ -753,7 +807,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): void | Promise<void> {
     // async 핸들러는 반드시 return 할 것 — 그래야 Nest가 rejection을 잡는다
     const gameType = this.getGameType(data.roomName);
-    if (gameType === 'casino') return; // 카지노는 casinoStart로 시작한다
+    // 카지노는 casinoStart, 그림 맞히기는 drawingStart로 시작한다
+    if (gameType === 'casino' || gameType === 'drawing') return;
     if (gameType === 'spice') {
       return this.spiceHandler.handleStartGame(data, client);
     } else if (gameType === 'skulking') {
@@ -768,7 +823,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('casinoStart')
   handleCasinoStart(
     @MessageBody()
-    data: { roomName: string; timeLimit: number | null; initialBalance: number },
+    data: {
+      roomName: string;
+      timeLimit: number | null;
+      initialBalance: number;
+    },
     @ConnectedSocket() client: WebSocket,
   ): Promise<void> {
     return this.casinoHandler.handleStart(data, client);
@@ -972,6 +1031,41 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.skulkingHandler.handleTestStart(data, client);
   }
 
+  // ── 그림 맞히기 전용 이벤트 ───────────────────────────────
+
+  @SubscribeMessage('drawingStart')
+  handleDrawingStart(
+    @MessageBody()
+    data: { roomName: string; rounds: number; drawTimeSec: number },
+    @ConnectedSocket() client: WebSocket,
+  ): Promise<void> {
+    return this.drawingHandler.handleStart(data, client);
+  }
+
+  @SubscribeMessage('drawingChoose')
+  handleDrawingChoose(
+    @MessageBody() data: { roomName: string; index: number },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.drawingHandler.handleChoose(data, client);
+  }
+
+  @SubscribeMessage('drawingStroke')
+  handleDrawingStroke(
+    @MessageBody() data: { roomName: string; ops: unknown },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.drawingHandler.handleStroke(data, client);
+  }
+
+  @SubscribeMessage('drawingGuess')
+  handleDrawingGuess(
+    @MessageBody() data: { roomName: string; text: unknown },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.drawingHandler.handleGuess(data, client);
+  }
+
   // ── 음성 통화 (WebRTC 시그널링) ───────────────────────────
 
   @SubscribeMessage('voiceJoin')
@@ -1021,7 +1115,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('voiceSpeaking')
   handleVoiceSpeaking(
-    @MessageBody() data: { roomName: string; playerId: string; isSpeaking: boolean },
+    @MessageBody()
+    data: {
+      roomName: string;
+      playerId: string;
+      isSpeaking: boolean;
+    },
   ): void {
     this.ctx.broadcastToRoom(data.roomName, 'voiceSpeaking', {
       roomName: data.roomName,
