@@ -1050,14 +1050,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.drawingHandler.handleFirstDraw(data, client);
   }
 
-  @SubscribeMessage('drawingChoose')
-  handleDrawingChoose(
-    @MessageBody() data: { roomName: string; index: number },
-    @ConnectedSocket() client: WebSocket,
-  ): void {
-    this.drawingHandler.handleChoose(data, client);
-  }
-
   @SubscribeMessage('drawingStroke')
   handleDrawingStroke(
     @MessageBody() data: { roomName: string; ops: unknown },
@@ -1072,92 +1064,5 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: WebSocket,
   ): void {
     this.drawingHandler.handleGuess(data, client);
-  }
-
-  // ── 음성 통화 (WebRTC 시그널링) ───────────────────────────
-
-  @SubscribeMessage('voiceJoin')
-  handleVoiceJoin(
-    @MessageBody() data: { roomName: string; playerId: string },
-    @ConnectedSocket() client: WebSocket,
-  ): void {
-    const room = this.ctx.rooms.get(data.roomName);
-    if (!room) return;
-
-    if (!room.voiceParticipants) {
-      room.voiceParticipants = new Map();
-    }
-
-    const nickname = this.ctx.getNicknameByPlayerId(room, data.playerId);
-    const existingParticipants = Array.from(room.voiceParticipants.values());
-
-    room.voiceParticipants.set(data.playerId, {
-      playerId: data.playerId,
-      nickname,
-    });
-
-    // 입장한 플레이어에게 기존 참여자 목록 전송 (offer 생성용)
-    this.ctx.sendToClient(client, 'voiceJoined', { existingParticipants });
-
-    // 방 전체에 갱신된 참여자 목록 브로드캐스트
-    this.ctx.broadcastToRoom(data.roomName, 'voiceParticipants', {
-      roomName: data.roomName,
-      participants: Array.from(room.voiceParticipants.values()),
-    });
-  }
-
-  @SubscribeMessage('voiceLeave')
-  handleVoiceLeave(
-    @MessageBody() data: { roomName: string; playerId: string },
-  ): void {
-    const room = this.ctx.rooms.get(data.roomName);
-    if (!room?.voiceParticipants) return;
-
-    room.voiceParticipants.delete(data.playerId);
-
-    this.ctx.broadcastToRoom(data.roomName, 'voiceParticipants', {
-      roomName: data.roomName,
-      participants: Array.from(room.voiceParticipants.values()),
-    });
-  }
-
-  @SubscribeMessage('voiceSpeaking')
-  handleVoiceSpeaking(
-    @MessageBody()
-    data: {
-      roomName: string;
-      playerId: string;
-      isSpeaking: boolean;
-    },
-  ): void {
-    this.ctx.broadcastToRoom(data.roomName, 'voiceSpeaking', {
-      roomName: data.roomName,
-      playerId: data.playerId,
-      isSpeaking: data.isSpeaking,
-    });
-  }
-
-  @SubscribeMessage('voiceSignal')
-  handleVoiceSignal(
-    @MessageBody()
-    data: {
-      roomName: string;
-      to: string;
-      from: string;
-      type: string;
-      payload: unknown;
-    },
-  ): void {
-    const room = this.ctx.rooms.get(data.roomName);
-    if (!room) return;
-
-    const targetClient = this.ctx.findClientByPlayerId(room, data.to);
-    if (targetClient) {
-      this.ctx.sendToClient(targetClient, 'voiceSignal', {
-        from: data.from,
-        type: data.type,
-        payload: data.payload,
-      });
-    }
   }
 }

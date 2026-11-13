@@ -151,14 +151,13 @@ export interface DrawingState {
   turnNumber: number; // 지금 몇 번째 그림인지 (1부터)
   totalTurns: number; // 시작 인원 × 바퀴 수
   turnOrder: string[]; // 자리 순서 (playerId, 시작 때 고정). 아무도 못 맞히면 이 순서로 넘긴다
-  phase: 'firstDraw' | 'choose' | 'draw' | 'guess' | 'reveal'; // guess: 그리기 끝난 뒤 맞히기만 하는 30초
+  phase: 'firstDraw' | 'ready' | 'draw' | 'guess' | 'reveal'; // ready: 뽑힌 제시어를 그리는 사람이 확인하는 3초 // guess: 그리기 끝난 뒤 맞히기만 하는 30초
   drawStartedAt: number; // 그리기 시작 시각 (빨리 맞힐수록 점수)
   firstDraw: Map<string, number>; // 선뽑기 결과
   firstDrawPool: number[]; // 남은 숫자 (1~10 섞음)
   firstDrawDone: boolean;
   nextDrawerId: string | null; // 다음에 그릴 사람 (첫 정답자, 선뽑기 1등)
   drawerId: string;
-  choices: string[]; // 그리는 사람에게만 보이는 제시어 후보
   word: string | null;
   phaseStartedAt: number;
   phaseEndsAt: number;
@@ -202,7 +201,6 @@ export interface Room {
   supabaseSessionId?: string; // Supabase game_sessions.id
   sessionStartedAt?: number; // 게임 시작 시각 (ms, duration 계산용)
   pendingAbandonedPlayerIds?: string[]; // sessionId 확정 전 이탈한 playerId 큐
-  voiceParticipants?: Map<string, { playerId: string; nickname: string }>; // 음성 통화 참여자
   casinoInitialBalance?: number; // 카지노: 게임 시작 시 지급 잔액
   casinoTimeLimit?: number | null; // 카지노: 시간 제한 (분, null=무제한)
   casinoStartedAt?: number; // 카지노: 게임 시작 타임스탬프 (ms)

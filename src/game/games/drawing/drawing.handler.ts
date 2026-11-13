@@ -23,7 +23,6 @@ type StrokeOp =
  * 이벤트 (클라이언트 → 서버):
  *   drawingStart   - 게임 시작 (방장 전용, rounds, drawTimeSec)
  *   drawingFirstDraw - 선뽑기 카드 뽑기
- *   drawingChoose  - 제시어 고르기 (그리는 사람, index)
  *   drawingStroke  - 그림 조각 (그리는 사람, ops)
  *   drawingGuess   - 채팅/정답 입력 (text)
  *
@@ -31,15 +30,14 @@ type StrokeOp =
  *   drawingStarted   - 게임 시작 (설정, 순서, 점수)
  *   drawingFirstDrawStarted / drawingFirstDrawUpdate / drawingFirstDrawFinished - 선뽑기 시작 / 뽑은 숫자 / 결과(firstPlayerId)
  *   drawingTurn      - 새 턴 (제시어 고르는 중)
- *   drawingChoices   - 제시어 후보 (그리는 사람에게만)
  *   drawingDrawStart - 그리기 시작 (글자 수 힌트, 제한시간)
  *   drawingWord      - 고른 제시어 (그리는 사람에게만)
  *   drawingStroke    - 그림 조각 중계 (그리는 사람 제외)
  *   drawingHint      - 힌트 공개 (초성, 글자)
  *   drawingChat      - 채팅 (scope: all | guessed — 맞힌 사람끼리)
  *   drawingCorrect   - 누가 맞힘 (점수 포함, 정답 글자는 없음)
- *   drawingClose     - 아깝게 틀림 (보낸 사람에게만)
  *   drawingBlocked   - 그리는 사람이 정답을 말하려 함 (보낸 사람에게만)
+ *   drawingAnswerOnly - 문장 속에 정답을 넣음 — 인정 안 하고 보내지도 않음 (보낸 사람에게만)
  *   drawingGuessTime - 그리기 끝, 맞히기만 30초 (hint, timeLimitMs)
  *   drawingTurnEnd   - 턴 종료 (정답, 맞힌 사람, 다음 차례). 정답이 나왔으면 5초 보여주고, 아니면 바로 다음 턴
  *   drawingPresence  - 연결 끊김/복귀
@@ -50,7 +48,8 @@ export class DrawingHandler {
   static readonly ALLOWED_ROUNDS = [1, 2, 3];
   static readonly ALLOWED_DRAW_TIMES = [60, 80, 100]; // 초
   static readonly MIN_PLAYERS = 2;
-  static readonly CHOOSE_TIME_MS = 10_000;
+  /** 제시어 뽑기 연출(룰렛 2초) + 그리는 사람이 확인하는 시간. 이후 그리기 시작 */
+  static readonly READY_TIME_MS = 4_000;
   /** 선뽑기: 안 뽑은 사람은 이 시간이 지나면 서버가 대신 뽑는다 */
   static readonly FIRST_DRAW_TIME_MS = 20_000;
   /** 선뽑기 결과를 보여주는 시간 */
@@ -61,7 +60,6 @@ export class DrawingHandler {
   static readonly REVEAL_TIME_MS = 5_000;
   /** 그리는 사람이 이만큼 끊겨 있으면 그 턴을 넘긴다 */
   static readonly DRAWER_AWAY_MS = 10_000;
-  static readonly CHOICE_COUNT = 3;
   /** 한 턴에 받을 수 있는 점 개수 (장난 낙서로 메모리가 늘지 않게) */
   static readonly MAX_POINTS_PER_TURN = 20_000;
   static readonly MAX_OPS_PER_MESSAGE = 200;
@@ -149,7 +147,6 @@ export class DrawingHandler {
       nextDrawerId: null,
       drawStartedAt: 0,
       drawerId: '',
-      choices: [],
       word: null,
       phaseStartedAt: 0,
       phaseEndsAt: 0,
@@ -297,16 +294,15 @@ export class DrawingHandler {
 
     d.drawerId = drawerId;
     d.nextDrawerId = null;
-    d.phase = 'choose';
-    d.word = null;
+    d.phase = 'ready';
+    d.word = this.pickWord(d);
     d.hint = [];
     d.strokes = [];
     d.pointCount = 0;
     d.guessed = [];
     d.turnGains = new Map();
-    d.choices = this.pickChoices(d);
     d.phaseStartedAt = Date.now();
-    d.phaseEndsAt = d.phaseStartedAt + DrawingHandler.CHOOSE_TIME_MS;
+    d.phaseEndsAt = d.phaseStartedAt + DrawingHandler.READY_TIME_MS;
 
     this.ctx.broadcastToRoom(room.name, 'drawingTurn', {
       roomName: room.name,
@@ -314,63 +310,46 @@ export class DrawingHandler {
       totalTurns: d.totalTurns,
       drawerId: d.drawerId,
       drawerNickname: d.nicknames.get(d.drawerId) ?? '',
-      timeLimitMs: DrawingHandler.CHOOSE_TIME_MS,
+      timeLimitMs: DrawingHandler.READY_TIME_MS,
     });
+    // 제시어는 고르지 않고 뽑는다. 그리는 사람이 3초 동안 확인한 뒤 그리기 시작
     const drawer = this.ctx.findClientByPlayerId(room, d.drawerId);
     if (drawer)
-      this.ctx.sendToClient(drawer, 'drawingChoices', {
+      this.ctx.sendToClient(drawer, 'drawingWord', {
         roomName: room.name,
-        choices: d.choices,
+        word: d.word,
       });
 
     d.timer = setTimeout(() => {
-      if (room.drawing !== d || d.phase !== 'choose') return;
-      // 끊겨서 못 고른 거면 그릴 사람이 없으니 넘긴다. 아니면 아무거나 골라 준다
+      if (room.drawing !== d || d.phase !== 'ready') return;
+      // 끊겨 있으면 그릴 사람이 없으니 넘긴다
       if (room.disconnectTimers.has(d.drawerId))
         this.endTurn(room, 'drawerAway');
-      else
-        this.startDrawing(room, Math.floor(Math.random() * d.choices.length));
-    }, DrawingHandler.CHOOSE_TIME_MS);
+      else this.startDrawing(room);
+    }, DrawingHandler.READY_TIME_MS);
 
     // 그리는 차례가 됐는데 이미 끊겨 있으면 바로 기다리기 시작한다
     if (room.disconnectTimers.has(d.drawerId)) this.startDrawerAwayTimer(room);
   }
 
-  private pickChoices(d: DrawingState): string[] {
+  /** 이번 게임에서 아직 안 나온 제시어 중 하나 (다 쓰면 처음부터) */
+  private pickWord(d: DrawingState): string {
     let pool = DRAWING_WORDS.filter((w) => !d.usedWords.has(w));
-    if (pool.length < DrawingHandler.CHOICE_COUNT) {
+    if (pool.length === 0) {
       d.usedWords.clear();
       pool = [...DRAWING_WORDS];
     }
-    const picks: string[] = [];
-    while (picks.length < DrawingHandler.CHOICE_COUNT) {
-      const w = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
-      picks.push(w);
-    }
-    return picks;
+    const word = pool[Math.floor(Math.random() * pool.length)];
+    d.usedWords.add(word);
+    return word;
   }
 
-  handleChoose(
-    data: { roomName: string; index: number },
-    client: WebSocket,
-  ): void {
-    const room = this.ctx.rooms.get(data.roomName);
-    const d = room?.drawing;
-    if (!room || !d || d.phase !== 'choose') return;
-    if (room.playerIds.get(client) !== d.drawerId) return;
-    const index = Number(data.index);
-    if (!Number.isInteger(index) || index < 0 || index >= d.choices.length)
-      return;
-    this.startDrawing(room, index);
-  }
-
-  private startDrawing(room: Room, index: number): void {
+  private startDrawing(room: Room): void {
     const d = room.drawing!;
     this.clearTurnTimers(d);
-    d.word = d.choices[index];
-    d.usedWords.add(d.word);
+    const word = d.word!;
     d.phase = 'draw';
-    d.hint = Array.from(d.word, (ch) => (ch === ' ' ? ' ' : null));
+    d.hint = Array.from(word, (ch) => (ch === ' ' ? ' ' : null));
     d.phaseStartedAt = Date.now();
     d.drawStartedAt = d.phaseStartedAt;
     const drawMs = d.drawTimeSec * 1000;
@@ -382,13 +361,6 @@ export class DrawingHandler {
       hint: d.hint,
       timeLimitMs: drawMs,
     });
-    const drawer = this.ctx.findClientByPlayerId(room, d.drawerId);
-    if (drawer)
-      this.ctx.sendToClient(drawer, 'drawingWord', {
-        roomName: room.name,
-        word: d.word,
-      });
-
     // 절반 지나면 초성, 그리기가 끝나면(맞히기 시간 시작) 한 글자
     d.hintTimers.push(
       setTimeout(() => this.revealChosung(room, d), drawMs / 2),
@@ -452,7 +424,6 @@ export class DrawingHandler {
     const d = room.drawing;
     if (!d || d.phase === 'reveal' || d.phase === 'firstDraw') return;
     this.clearTurnTimers(d);
-    // 고르기 전에 끝났으면 null (화면에는 '제시어를 고르지 않았어요')
     const word = d.word;
     const winnerId = reason === 'correct' ? (d.guessed[0] ?? null) : null;
     d.nextDrawerId = winnerId ?? this.seatAfter(room, d, d.drawerId);
@@ -636,14 +607,15 @@ export class DrawingHandler {
       return;
     }
 
-    if (isClose(guess, answer)) {
-      // 아까운 답은 다른 사람에게 큰 힌트라 보내지 않는다
-      this.ctx.sendToClient(client, 'drawingClose', {
+    // 문장 속에 정답을 넣으면 인정하지 않는다(여러 단어를 한꺼번에 찍는 걸 막으려고).
+    // 그대로 보내면 정답이 다른 사람에게 보이므로 보낸 사람에게만 알린다
+    if (guess.includes(answer)) {
+      this.ctx.sendToClient(client, 'drawingAnswerOnly', {
         roomName: room.name,
-        text,
       });
       return;
     }
+
     this.ctx.broadcastToRoom(room.name, 'drawingChat', {
       ...chat,
       scope: 'all',
@@ -693,7 +665,7 @@ export class DrawingHandler {
     });
     if (d.phase === 'firstDraw') return; // 시간이 지나면 서버가 대신 뽑는다
     // 맞히기 시간에는 그릴 게 없으니 그리는 사람이 끊겨도 그대로 진행한다
-    if (playerId === d.drawerId && (d.phase === 'choose' || d.phase === 'draw'))
+    if (playerId === d.drawerId && (d.phase === 'ready' || d.phase === 'draw'))
       this.startDrawerAwayTimer(room);
   }
 
@@ -720,7 +692,7 @@ export class DrawingHandler {
       if (
         room.drawing === d &&
         d.drawerId === drawerId &&
-        (d.phase === 'choose' || d.phase === 'draw')
+        (d.phase === 'ready' || d.phase === 'draw')
       )
         this.endTurn(room, 'drawerAway');
     }, DrawingHandler.DRAWER_AWAY_MS);
@@ -747,7 +719,7 @@ export class DrawingHandler {
       return;
     }
     // 맞히기 시간이면 그림은 이미 다 그려졌으니 그대로 맞히게 둔다
-    if (playerId === d.drawerId && (d.phase === 'choose' || d.phase === 'draw'))
+    if (playerId === d.drawerId && (d.phase === 'ready' || d.phase === 'draw'))
       this.endTurn(room, 'drawerLeft');
   }
 
@@ -879,7 +851,6 @@ export class DrawingHandler {
         phase: d.phase,
         drawerId: d.drawerId,
         word: isDrawer || d.phase === 'reveal' ? d.word : null,
-        choices: isDrawer && d.phase === 'choose' ? d.choices : null,
         hint: d.hint,
         strokes: d.strokes,
         guessed: d.guessed,
@@ -911,31 +882,10 @@ function chosungOf(ch: string): string {
   return CHOSUNG[Math.floor(code / 588)];
 }
 
+/**
+ * 비교용: 띄어쓰기·기호(?!.~ 등)·이모지·자모만 있는 글자(ㅋㅎㅠ)를 빼고 소문자로.
+ * "고양이?", "고양이ㅋㅋ", "고 양 이"도 정답으로 본다. 문장 속에 끼어 있는 정답은 인정하지 않는다
+ */
 function normalize(s: string): string {
-  return s.replace(/\s+/g, '').toLowerCase();
-}
-
-/** 한 글자만 다르거나 빠지거나 더 있을 때 */
-function isClose(a: string, b: string): boolean {
-  const x = Array.from(a);
-  const y = Array.from(b);
-  if (y.length < 2 || Math.abs(x.length - y.length) > 1) return false;
-  let i = 0;
-  let j = 0;
-  let edits = 0;
-  while (i < x.length && j < y.length) {
-    if (x[i] === y[j]) {
-      i++;
-      j++;
-      continue;
-    }
-    if (++edits > 1) return false;
-    if (x.length > y.length) i++;
-    else if (x.length < y.length) j++;
-    else {
-      i++;
-      j++;
-    }
-  }
-  return edits + (x.length - i) + (y.length - j) === 1;
+  return s.replace(/[\s\p{P}\p{S}\u3131-\u318E]/gu, '').toLowerCase();
 }

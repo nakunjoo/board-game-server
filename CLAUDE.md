@@ -10,6 +10,9 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-11-13 | **음성 통화 제거** — 게이트웨이 `voiceJoin`/`voiceLeave`/`voiceSpeaking`/`voiceSignal` 핸들러와 `Room.voiceParticipants` 삭제 (방 참여 확인이 없어 다른 방 통화를 엿들을 수 있었고, TURN이 없어 휴대폰 데이터망에서 연결이 거의 안 됐음) |
+| 2026-11-13 | 끄적끄적: 문장 속에 정답이 든 말은 다른 사람에게 보내지 않고 보낸 사람에게 `drawingAnswerOnly` (그대로 채팅으로 보내 정답이 새던 문제). 제시어 확인 시간 3초 → 4초(룰렛 연출) |
+| 2026-11-13 | 끄적끄적: 제시어는 고르지 않고 무작위로 뽑는다 — `choose`(3개 중 고르기 10초) → `ready`(뽑힌 제시어를 그리는 사람이 4초(룰렛 연출 2초 + 확인), `READY_TIME_MS`), `drawingChoose`/`drawingChoices` 삭제, 턴 시작 때 `drawingWord`. "거의 맞았어요"(`drawingClose`, `isClose`) 삭제. 정답 비교는 띄어쓰기·기호·이모지·자모(ㅋㅎㅠ)를 빼고(`normalize`) — "고양이?"도 정답 |
 | 2026-11-13 | **끄적끄적 진행 방식 변경** — 선뽑기로 첫 사람을 정하고, 이후 처음 맞힌 사람이 다음에 그린다(못 맞히면 자리 순서). 그리는 시간 뒤 맞히기만 30초(`guess`). 첫 정답에서 턴 종료 → 5초 보여주고 다음, 못 맞히면 바로 다음. 그린 사람도 맞힌 사람과 같은 점수. 그림 수는 인원 × 바퀴. `DrawingState`: `round`/`turnIndex` → `turnNumber`/`totalTurns`, `firstDraw*`, `nextDrawerId`, `drawStartedAt` |
 | 2026-11-13 | 끄적끄적 최소 인원 3명 → 2명 (`DrawingHandler.MIN_PLAYERS`) |
 | 2026-11-13 | **끄적끄적(`drawing`) 추가** — `games/drawing/drawing.handler.ts`·`drawing.words.ts`(제시어 약 300개). 제시어 선택·그림 중계·정답 판정·점수·힌트·타이머 모두 서버. 게이트웨이: `drawingStart`/`drawingChoose`/`drawingStroke`/`drawingGuess` 등록, 덱 없는 게임으로 방 생성, `startGame`은 무시, 끊김/재접속 때 `handleDisconnect`/`handleReconnect`, `roomJoined`에 `buildDrawingState`. `game.types.ts`에 `DrawingState`/`DrawingStroke`, `Room.drawing`/`drawingGameOverResult`. DB `game_type`에 `'drawing'` 추가 필요(SUPABASE_SCHEMA.md 마이그레이션) — 넣기 전엔 세션 기록만 실패하고 게임은 된다 |
@@ -289,17 +292,17 @@ src/
 
 **순서:** 시작하면 선뽑기(`firstDraw`, 1~10 섞어 하나씩, 20초 지나면 서버가 대신 뽑음) → 가장 큰 숫자가 먼저 그린다. 이후 **처음 맞힌 사람이 다음에 그린다**. 아무도 못 맞히면 자리 순서(`turnOrder`)로 다음 사람(`seatAfter`). 나간 사람은 건너뛴다.
 
-**한 턴:** `choose`(제시어 3개 중 고르기, 10초 — 못 고르면 자동, 그리는 사람이 끊겨 있으면 넘김) → `draw`(그리는 시간, 절반 지나면 초성 공개) → `guess`(그리기 잠금, 맞히기만 30초 `GUESS_TIME_MS`, 시작 때 한 글자 공개). 누가 맞히면 **그 자리에서 턴 종료** → `reveal`(그림·정답 5초 `REVEAL_TIME_MS`) → 맞힌 사람 차례. 아무도 못 맞히면 `reveal` 없이(`timeLimitMs: 0`) 바로 다음 턴.
+**한 턴:** `ready`(제시어를 무작위로 뽑아 그리는 사람에게만 `drawingWord`, 4초 — 그리는 사람이 끊겨 있으면 넘김) → `draw`(그리는 시간, 절반 지나면 초성 공개) → `guess`(그리기 잠금, 맞히기만 30초 `GUESS_TIME_MS`, 시작 때 한 글자 공개). 누가 맞히면 **그 자리에서 턴 종료** → `reveal`(그림·정답 5초 `REVEAL_TIME_MS`) → 맞힌 사람 차례. 아무도 못 맞히면 `reveal` 없이(`timeLimitMs: 0`) 바로 다음 턴.
 
 **점수:** 맞힌 사람 `max(40, 100 - 60 × 경과비율)`(그리기 시작부터 그리기+맞히기 시간 전체 기준), **그린 사람도 같은 점수** — 일부러 못 알아보게 그리면 남을 막는 만큼 자기도 잃게 해서 방해 그림을 막는다. 못 맞히면 둘 다 0.
 
-**정답 판정:** 공백 제거·소문자로 비교. 한 글자 차이면 `drawingClose`를 보낸 사람에게만(남에게는 큰 힌트라 안 보냄). 그리는 사람이 정답이 들어간 말을 하면 `drawingBlocked`. 첫 정답에서 턴이 끝나므로 `scope: 'guessed'`(맞힌 사람끼리 채팅)는 사실상 쓰이지 않는다.
+**정답 판정:** 띄어쓰기·기호·이모지·자모만 있는 글자(ㅋㅎㅠ)를 빼고 소문자로 비교해 정확히 같아야 정답("고양이?", "고양이ㅋㅋ"는 정답, "이거 고양이 아니야?"는 아님 — 이런 말은 정답이 새지 않게 아무에게도 보내지 않고 `drawingAnswerOnly`). 그리는 사람이 정답이 들어간 말을 하면 `drawingBlocked`. 첫 정답에서 턴이 끝나므로 `scope: 'guessed'`(맞힌 사람끼리 채팅)는 사실상 쓰이지 않는다.
 
 **그림:** 좌표는 그림판 크기와 무관한 0~1000 정수(그림판은 세로 3:4 고정), 굵기는 가로의 1/1000 단위. 조각(`b` 시작 / `m` 이어 그리기 / `u` 되돌리기 / `x` 전체 지우기)을 검증해 저장하고 그리는 사람 외에게 중계한다. 색·굵기는 허용 목록만, 한 턴 점 20,000개·메시지당 조각 200개 상한. 턴마다 비운다.
 
 **끊김:** 그리는 사람이 `choose`/`draw` 중 10초(`DRAWER_AWAY_MS`) 넘게 끊기면 턴 종료(`reason: 'drawerAway'`, 다음은 자리 순서). `guess` 중에는 그림이 이미 있으니 그대로 진행. 30초 유예가 지나 방에서 빠지면 `handlePlayerLeft` — 선뽑기 중이면 결과를 다시 확인, 그리는 사람이 `choose`/`draw` 중이면 턴 종료, 2명 미만이면 `notEnough`로 게임 종료.
 
-**클라이언트 → 서버:** `drawingStart`(rounds, drawTimeSec), `drawingFirstDraw`, `drawingChoose`(index), `drawingStroke`(ops), `drawingGuess`(text, 100자)
+**클라이언트 → 서버:** `drawingStart`(rounds, drawTimeSec), `drawingFirstDraw`, `drawingStroke`(ops), `drawingGuess`(text, 100자)
 
 **서버 → 클라이언트:**
 | 이벤트 | 내용 |
@@ -307,15 +310,15 @@ src/
 | `drawingStarted` | 시작 (totalRounds, totalTurns, drawTimeSec, turnOrder, scores) |
 | `drawingFirstDrawStarted` / `drawingFirstDrawUpdate` / `drawingFirstDrawFinished` | 선뽑기 시작(timeLimitMs) / 뽑은 숫자(draws) / 결과(draws, firstPlayerId, firstNickname) — 결과 2.5초 뒤 첫 턴 |
 | `drawingTurn` | 새 턴 (turnNumber, totalTurns, drawerId, drawerNickname, timeLimitMs) |
-| `drawingChoices` | 제시어 후보 — 그리는 사람에게만 |
 | `drawingDrawStart` | 그리기 시작 (hint: 글자별 null/초성/글자, timeLimitMs) |
-| `drawingWord` | 고른 제시어 — 그리는 사람에게만 |
+| `drawingWord` | 뽑힌 제시어 — 턴 시작 때 그리는 사람에게만 |
 | `drawingStroke` | 그림 조각 중계 (ops) — 그리는 사람 제외 |
 | `drawingHint` | 힌트 갱신 (hint) |
 | `drawingGuessTime` | 그리기 끝, 맞히기만 30초 (hint, timeLimitMs) |
 | `drawingChat` | 채팅 (playerId, nickname, text, scope) |
 | `drawingCorrect` | 정답 (playerId, gained, guessed, scores) — 정답 글자는 없음. 바로 `drawingTurnEnd`가 따라온다 |
-| `drawingClose` / `drawingBlocked` | 아까운 답 / 정답 누설 차단 — 보낸 사람에게만 |
+| `drawingBlocked` | 그리는 사람의 정답 누설 차단 — 보낸 사람에게만 |
+| `drawingAnswerOnly` | 맞히는 사람이 문장 속에 정답을 넣음 — 정답으로 인정하지 않고 다른 사람에게 보내지도 않음(정답 노출 방지), 보낸 사람에게만 |
 | `drawingTurnEnd` | 턴 종료 (reason: correct·time·drawerLeft·drawerAway, word — 고르기 전이면 null, winnerId/winnerNickname, nextDrawerId/nextDrawerNickname — 마지막이면 null, gains, scores, timeLimitMs — 정답이면 5000, 아니면 0이고 곧바로 `drawingTurn`) |
 | `drawingPresence` | 연결 끊김/복귀 (playerId, connected) |
 | `drawingGameOver` | 종료 (reason: finished·notEnough, ranking) |
