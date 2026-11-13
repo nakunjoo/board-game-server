@@ -15,17 +15,21 @@ type StrokeOp =
 /**
  * '끄적끄적'(그림 맞히기) 게임 핸들러
  *
- * 한 명이 제시어를 고르고 그리면 나머지가 채팅으로 맞힌다. 모두 한 번씩 그리면 한 바퀴.
+ * 한 명이 제시어를 고르고 그리면 나머지가 채팅으로 맞힌다.
+ * 처음엔 선뽑기(1~10)로 가장 높은 사람이 그리고, 그다음부터는 처음 맞힌 사람이 그린다
+ * (아무도 못 맞히면 자리 순서로 다음 사람). 그림 수는 시작 인원 × 바퀴 수.
  * 정답 판정·점수·타이머는 모두 서버가 한다. 클라이언트 타이머는 표시용.
  *
  * 이벤트 (클라이언트 → 서버):
  *   drawingStart   - 게임 시작 (방장 전용, rounds, drawTimeSec)
+ *   drawingFirstDraw - 선뽑기 카드 뽑기
  *   drawingChoose  - 제시어 고르기 (그리는 사람, index)
  *   drawingStroke  - 그림 조각 (그리는 사람, ops)
  *   drawingGuess   - 채팅/정답 입력 (text)
  *
  * 이벤트 (서버 → 클라이언트):
  *   drawingStarted   - 게임 시작 (설정, 순서, 점수)
+ *   drawingFirstDrawStarted / drawingFirstDrawUpdate / drawingFirstDrawFinished - 선뽑기 시작 / 뽑은 숫자 / 결과(firstPlayerId)
  *   drawingTurn      - 새 턴 (제시어 고르는 중)
  *   drawingChoices   - 제시어 후보 (그리는 사람에게만)
  *   drawingDrawStart - 그리기 시작 (글자 수 힌트, 제한시간)
@@ -36,7 +40,8 @@ type StrokeOp =
  *   drawingCorrect   - 누가 맞힘 (점수 포함, 정답 글자는 없음)
  *   drawingClose     - 아깝게 틀림 (보낸 사람에게만)
  *   drawingBlocked   - 그리는 사람이 정답을 말하려 함 (보낸 사람에게만)
- *   drawingTurnEnd   - 턴 종료 (정답 공개, 이번 턴 점수)
+ *   drawingGuessTime - 그리기 끝, 맞히기만 30초 (hint, timeLimitMs)
+ *   drawingTurnEnd   - 턴 종료 (정답, 맞힌 사람, 다음 차례). 정답이 나왔으면 5초 보여주고, 아니면 바로 다음 턴
  *   drawingPresence  - 연결 끊김/복귀
  *   drawingGameOver  - 게임 종료 (순위)
  */
@@ -44,9 +49,16 @@ type StrokeOp =
 export class DrawingHandler {
   static readonly ALLOWED_ROUNDS = [1, 2, 3];
   static readonly ALLOWED_DRAW_TIMES = [60, 80, 100]; // 초
-  static readonly MIN_PLAYERS = 3;
+  static readonly MIN_PLAYERS = 2;
   static readonly CHOOSE_TIME_MS = 10_000;
-  static readonly REVEAL_TIME_MS = 4_000;
+  /** 선뽑기: 안 뽑은 사람은 이 시간이 지나면 서버가 대신 뽑는다 */
+  static readonly FIRST_DRAW_TIME_MS = 20_000;
+  /** 선뽑기 결과를 보여주는 시간 */
+  static readonly FIRST_DRAW_RESULT_MS = 2_500;
+  /** 그리는 시간이 끝난 뒤 그림은 그대로 두고 맞히기만 하는 시간 */
+  static readonly GUESS_TIME_MS = 30_000;
+  /** 정답이 나오면 그림과 정답을 보여주는 시간 */
+  static readonly REVEAL_TIME_MS = 5_000;
   /** 그리는 사람이 이만큼 끊겨 있으면 그 턴을 넘긴다 */
   static readonly DRAWER_AWAY_MS = 10_000;
   static readonly CHOICE_COUNT = 3;
@@ -127,10 +139,15 @@ export class DrawingHandler {
     room.drawing = {
       totalRounds: rounds,
       drawTimeSec,
-      round: 1,
+      turnNumber: 0,
+      totalTurns: rounds * players.length,
       turnOrder: players.map((p) => p.playerId),
-      turnIndex: -1,
-      phase: 'choose',
+      phase: 'firstDraw',
+      firstDraw: new Map(),
+      firstDrawPool: shuffle([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+      firstDrawDone: false,
+      nextDrawerId: null,
+      drawStartedAt: 0,
       drawerId: '',
       choices: [],
       word: null,
@@ -152,6 +169,7 @@ export class DrawingHandler {
     this.ctx.broadcastToRoom(roomName, 'drawingStarted', {
       roomName,
       totalRounds: rounds,
+      totalTurns: room.drawing.totalTurns,
       drawTimeSec,
       turnOrder: room.drawing.turnOrder,
       scores: Object.fromEntries(room.drawing.scores),
@@ -159,36 +177,126 @@ export class DrawingHandler {
     console.log(
       `[Drawing] '${roomName}' started | rounds ${rounds} | ${drawTimeSec}s | ${players.length}명`,
     );
-    this.startNextTurn(room);
+    this.startFirstDraw(room);
+  }
+
+  // ── 선뽑기 ───────────────────────────────────────────────
+
+  /** 1~10 중 하나씩 뽑아 가장 높은 사람이 먼저 그린다 */
+  private startFirstDraw(room: Room): void {
+    const d = room.drawing!;
+    d.phaseStartedAt = Date.now();
+    d.phaseEndsAt = d.phaseStartedAt + DrawingHandler.FIRST_DRAW_TIME_MS;
+    this.ctx.broadcastToRoom(room.name, 'drawingFirstDrawStarted', {
+      roomName: room.name,
+      timeLimitMs: DrawingHandler.FIRST_DRAW_TIME_MS,
+    });
+    d.timer = setTimeout(() => {
+      if (room.drawing === d) this.finishFirstDraw(room);
+    }, DrawingHandler.FIRST_DRAW_TIME_MS);
+  }
+
+  handleFirstDraw(data: { roomName: string }, client: WebSocket): void {
+    const room = this.ctx.rooms.get(data.roomName);
+    const d = room?.drawing;
+    if (!room || !d || d.phase !== 'firstDraw' || d.firstDrawDone) return;
+    const playerId = room.playerIds.get(client);
+    if (!playerId || d.firstDraw.has(playerId)) return;
+    this.drawNumber(d, playerId);
+    this.ctx.broadcastToRoom(room.name, 'drawingFirstDrawUpdate', {
+      roomName: room.name,
+      draws: Object.fromEntries(d.firstDraw),
+    });
+    this.checkFirstDrawDone(room, d);
+  }
+
+  private drawNumber(d: DrawingState, playerId: string): void {
+    d.firstDraw.set(playerId, d.firstDrawPool.pop() ?? 0);
+  }
+
+  private checkFirstDrawDone(room: Room, d: DrawingState): void {
+    const all = Array.from(room.playerIds.values());
+    if (all.every((pid) => d.firstDraw.has(pid))) this.finishFirstDraw(room);
+  }
+
+  private finishFirstDraw(room: Room): void {
+    const d = room.drawing;
+    if (!d || d.phase !== 'firstDraw' || d.firstDrawDone) return;
+    this.clearTurnTimers(d);
+    d.firstDrawDone = true;
+    // 안 뽑은 사람(끊김·잠수)은 대신 뽑는다. 나간 사람 결과는 뺀다
+    const inRoom = new Set(room.playerIds.values());
+    for (const pid of inRoom)
+      if (!d.firstDraw.has(pid)) this.drawNumber(d, pid);
+    for (const pid of d.firstDraw.keys())
+      if (!inRoom.has(pid)) d.firstDraw.delete(pid);
+
+    let first = '';
+    let best = -1;
+    for (const [pid, n] of d.firstDraw) {
+      if (n > best) {
+        best = n;
+        first = pid;
+      }
+    }
+    d.nextDrawerId = first;
+    d.phaseStartedAt = Date.now();
+    d.phaseEndsAt = d.phaseStartedAt + DrawingHandler.FIRST_DRAW_RESULT_MS;
+    this.ctx.broadcastToRoom(room.name, 'drawingFirstDrawFinished', {
+      roomName: room.name,
+      draws: Object.fromEntries(d.firstDraw),
+      firstPlayerId: first,
+      firstNickname: d.nicknames.get(first) ?? '',
+    });
+    d.timer = setTimeout(() => {
+      if (room.drawing === d) this.startNextTurn(room);
+    }, DrawingHandler.FIRST_DRAW_RESULT_MS);
   }
 
   // ── 턴 진행 ──────────────────────────────────────────────
+
+  /** 아무도 못 맞혔거나 정해진 사람이 나갔을 때: 자리 순서로 그 다음 사람 */
+  private seatAfter(
+    room: Room,
+    d: DrawingState,
+    playerId: string,
+  ): string | null {
+    const inRoom = new Set(room.playerIds.values());
+    const start = d.turnOrder.indexOf(playerId);
+    for (let k = 1; k <= d.turnOrder.length; k++) {
+      const pid =
+        d.turnOrder[(start + k + d.turnOrder.length) % d.turnOrder.length];
+      if (inRoom.has(pid) && pid !== playerId) return pid;
+    }
+    return null;
+  }
 
   private startNextTurn(room: Room): void {
     const d = room.drawing;
     if (!d) return;
     this.clearTurnTimers(d);
 
-    // 나간 사람은 건너뛴다
+    d.turnNumber++;
+    if (d.turnNumber > d.totalTurns) {
+      this.finishGame(room, 'finished');
+      return;
+    }
     const inRoom = new Set(room.playerIds.values());
-    let next = d.turnIndex + 1;
-    let round = d.round;
-    for (;;) {
-      if (next >= d.turnOrder.length) {
-        next = 0;
-        round++;
-        if (round > d.totalRounds) {
-          this.finishGame(room, 'finished');
-          return;
-        }
-      }
-      if (inRoom.has(d.turnOrder[next])) break;
-      next++;
+    const drawerId =
+      d.nextDrawerId && inRoom.has(d.nextDrawerId)
+        ? d.nextDrawerId
+        : this.seatAfter(
+            room,
+            d,
+            d.drawerId || (d.turnOrder[d.turnOrder.length - 1] ?? ''),
+          );
+    if (!drawerId) {
+      this.finishGame(room, 'notEnough');
+      return;
     }
 
-    d.turnIndex = next;
-    d.round = round;
-    d.drawerId = d.turnOrder[next];
+    d.drawerId = drawerId;
+    d.nextDrawerId = null;
     d.phase = 'choose';
     d.word = null;
     d.hint = [];
@@ -202,8 +310,8 @@ export class DrawingHandler {
 
     this.ctx.broadcastToRoom(room.name, 'drawingTurn', {
       roomName: room.name,
-      round: d.round,
-      totalRounds: d.totalRounds,
+      turnNumber: d.turnNumber,
+      totalTurns: d.totalTurns,
       drawerId: d.drawerId,
       drawerNickname: d.nicknames.get(d.drawerId) ?? '',
       timeLimitMs: DrawingHandler.CHOOSE_TIME_MS,
@@ -264,6 +372,7 @@ export class DrawingHandler {
     d.phase = 'draw';
     d.hint = Array.from(d.word, (ch) => (ch === ' ' ? ' ' : null));
     d.phaseStartedAt = Date.now();
+    d.drawStartedAt = d.phaseStartedAt;
     const drawMs = d.drawTimeSec * 1000;
     d.phaseEndsAt = d.phaseStartedAt + drawMs;
 
@@ -280,18 +389,31 @@ export class DrawingHandler {
         word: d.word,
       });
 
-    // 절반 지나면 초성, 10초 남으면 한 글자
+    // 절반 지나면 초성, 그리기가 끝나면(맞히기 시간 시작) 한 글자
     d.hintTimers.push(
       setTimeout(() => this.revealChosung(room, d), drawMs / 2),
     );
-    if (d.drawTimeSec > 20) {
-      d.hintTimers.push(
-        setTimeout(() => this.revealOneLetter(room, d), drawMs - 10_000),
-      );
-    }
     d.timer = setTimeout(() => {
-      if (room.drawing === d && d.phase === 'draw') this.endTurn(room, 'time');
+      if (room.drawing === d && d.phase === 'draw') this.startGuessTime(room);
     }, drawMs);
+  }
+
+  /** 그리기는 잠그고 맞히기만 30초 더 */
+  private startGuessTime(room: Room): void {
+    const d = room.drawing!;
+    this.clearTurnTimers(d);
+    this.revealOneLetter(room, d);
+    d.phase = 'guess';
+    d.phaseStartedAt = Date.now();
+    d.phaseEndsAt = d.phaseStartedAt + DrawingHandler.GUESS_TIME_MS;
+    this.ctx.broadcastToRoom(room.name, 'drawingGuessTime', {
+      roomName: room.name,
+      hint: d.hint,
+      timeLimitMs: DrawingHandler.GUESS_TIME_MS,
+    });
+    d.timer = setTimeout(() => {
+      if (room.drawing === d && d.phase === 'guess') this.endTurn(room, 'time');
+    }, DrawingHandler.GUESS_TIME_MS);
   }
 
   private revealChosung(room: Room, d: DrawingState): void {
@@ -313,25 +435,32 @@ export class DrawingHandler {
       .filter((i) => d.hint[i] !== chars[i]);
     if (hidden.length <= 1) return;
     const i = hidden[Math.floor(Math.random() * hidden.length)];
-    d.hint = d.hint.map((h, j) => (j === i ? chars[i] : h));
-    this.ctx.broadcastToRoom(room.name, 'drawingHint', {
-      roomName: room.name,
-      hint: d.hint,
-    });
+    // 초성이 아직이면(그리기 시간이 아주 짧을 때) 같이 공개한다
+    d.hint = chars.map((ch, j) =>
+      j === i ? ch : (d.hint[j] ?? chosungOf(ch)),
+    );
   }
 
+  /**
+   * 정답이 나오면(correct) 그림과 정답을 5초 보여준 뒤 맞힌 사람이 다음에 그린다.
+   * 아무도 못 맞혔으면 정답만 알리고 바로 자리 순서로 다음 사람 차례.
+   */
   private endTurn(
     room: Room,
-    reason: 'time' | 'allGuessed' | 'drawerLeft' | 'drawerAway',
+    reason: 'correct' | 'time' | 'drawerLeft' | 'drawerAway',
   ): void {
     const d = room.drawing;
-    if (!d || d.phase === 'reveal') return;
+    if (!d || d.phase === 'reveal' || d.phase === 'firstDraw') return;
     this.clearTurnTimers(d);
     // 고르기 전에 끝났으면 null (화면에는 '제시어를 고르지 않았어요')
     const word = d.word;
+    const winnerId = reason === 'correct' ? (d.guessed[0] ?? null) : null;
+    d.nextDrawerId = winnerId ?? this.seatAfter(room, d, d.drawerId);
+    const isLast = d.turnNumber >= d.totalTurns;
+    const revealMs = winnerId ? DrawingHandler.REVEAL_TIME_MS : 0;
     d.phase = 'reveal';
     d.phaseStartedAt = Date.now();
-    d.phaseEndsAt = d.phaseStartedAt + DrawingHandler.REVEAL_TIME_MS;
+    d.phaseEndsAt = d.phaseStartedAt + revealMs;
 
     this.ctx.broadcastToRoom(room.name, 'drawingTurnEnd', {
       roomName: room.name,
@@ -340,11 +469,22 @@ export class DrawingHandler {
       drawerId: d.drawerId,
       gains: Object.fromEntries(d.turnGains),
       scores: Object.fromEntries(d.scores),
-      timeLimitMs: DrawingHandler.REVEAL_TIME_MS,
+      nextDrawerId: isLast ? null : d.nextDrawerId,
+      nextDrawerNickname:
+        isLast || !d.nextDrawerId
+          ? null
+          : (d.nicknames.get(d.nextDrawerId) ?? ''),
+      winnerId,
+      winnerNickname: winnerId ? (d.nicknames.get(winnerId) ?? '') : null,
+      timeLimitMs: revealMs,
     });
+    if (revealMs === 0) {
+      this.startNextTurn(room);
+      return;
+    }
     d.timer = setTimeout(() => {
       if (room.drawing === d) this.startNextTurn(room);
-    }, DrawingHandler.REVEAL_TIME_MS);
+    }, revealMs);
   }
 
   // ── 그림 ─────────────────────────────────────────────────
@@ -452,8 +592,8 @@ export class DrawingHandler {
     const chat = { roomName: room.name, playerId, nickname, text };
     const d = room.drawing;
 
-    // 그리는 중이 아니면 그냥 채팅
-    if (!d || d.phase !== 'draw' || !d.word) {
+    // 그리기·맞히기 시간이 아니면 그냥 채팅
+    if (!d || (d.phase !== 'draw' && d.phase !== 'guess') || !d.word) {
       this.ctx.broadcastToRoom(room.name, 'drawingChat', {
         ...chat,
         scope: 'all',
@@ -516,46 +656,29 @@ export class DrawingHandler {
     playerId: string,
     nickname: string,
   ): void {
-    const elapsed = (Date.now() - d.phaseStartedAt) / (d.drawTimeSec * 1000);
-    const first = d.guessed.length === 0;
-    const gained =
-      Math.max(40, Math.round(100 - 60 * Math.min(1, elapsed))) +
-      (first ? 20 : 0);
+    // 빨리 맞힐수록 높다 (그리기+맞히기 시간 전체 기준 100 → 40).
+    // 그린 사람도 같은 점수 — 일부러 못 알아보게 그리면 남을 막는 만큼 자기도 잃는다
+    const totalMs = d.drawTimeSec * 1000 + DrawingHandler.GUESS_TIME_MS;
+    const elapsed = (Date.now() - d.drawStartedAt) / totalMs;
+    const gained = Math.max(40, Math.round(100 - 60 * Math.min(1, elapsed)));
     d.guessed.push(playerId);
     this.addScore(d, playerId, gained);
-    this.addScore(d, d.drawerId, 30);
+    this.addScore(d, d.drawerId, gained);
 
     this.ctx.broadcastToRoom(room.name, 'drawingCorrect', {
       roomName: room.name,
       playerId,
       nickname,
       gained,
-      order: d.guessed.length,
       guessed: d.guessed,
-      totalGuessers: this.guessers(room, d).length,
       scores: Object.fromEntries(d.scores),
     });
-    this.checkAllGuessed(room, d);
+    this.endTurn(room, 'correct');
   }
 
   private addScore(d: DrawingState, playerId: string, n: number): void {
     d.scores.set(playerId, (d.scores.get(playerId) ?? 0) + n);
     d.turnGains.set(playerId, (d.turnGains.get(playerId) ?? 0) + n);
-  }
-
-  /** 맞혀야 하는 사람: 그리는 사람을 뺀, 접속 중인 사람 */
-  private guessers(room: Room, d: DrawingState): string[] {
-    return Array.from(room.playerIds.values()).filter(
-      (pid) => pid !== d.drawerId && !room.disconnectTimers.has(pid),
-    );
-  }
-
-  private checkAllGuessed(room: Room, d: DrawingState): void {
-    if (d.phase !== 'draw' || d.guessed.length === 0) return;
-    const left = this.guessers(room, d).filter(
-      (pid) => !d.guessed.includes(pid),
-    );
-    if (left.length === 0) this.endTurn(room, 'allGuessed');
   }
 
   // ── 연결 끊김 / 이탈 ─────────────────────────────────────
@@ -568,10 +691,10 @@ export class DrawingHandler {
       playerId,
       connected: false,
     });
-    if (playerId === d.drawerId && d.phase !== 'reveal')
+    if (d.phase === 'firstDraw') return; // 시간이 지나면 서버가 대신 뽑는다
+    // 맞히기 시간에는 그릴 게 없으니 그리는 사람이 끊겨도 그대로 진행한다
+    if (playerId === d.drawerId && (d.phase === 'choose' || d.phase === 'draw'))
       this.startDrawerAwayTimer(room);
-    // 못 맞힌 사람이 끊기면 나머지가 다 맞힌 상태일 수 있다
-    else this.checkAllGuessed(room, d);
   }
 
   handleReconnect(room: Room, playerId: string): void {
@@ -594,7 +717,11 @@ export class DrawingHandler {
     const drawerId = d.drawerId;
     d.drawerAwayTimer = setTimeout(() => {
       d.drawerAwayTimer = undefined;
-      if (room.drawing === d && d.drawerId === drawerId && d.phase !== 'reveal')
+      if (
+        room.drawing === d &&
+        d.drawerId === drawerId &&
+        (d.phase === 'choose' || d.phase === 'draw')
+      )
         this.endTurn(room, 'drawerAway');
     }, DrawingHandler.DRAWER_AWAY_MS);
   }
@@ -611,9 +738,17 @@ export class DrawingHandler {
       this.finishGame(room, 'notEnough');
       return;
     }
-    if (playerId === d.drawerId && d.phase !== 'reveal')
+    if (d.phase === 'firstDraw') {
+      // 남은 사람이 다 뽑았으면 바로 결과로
+      if (!d.firstDrawDone) {
+        d.firstDraw.delete(playerId);
+        this.checkFirstDrawDone(room, d);
+      }
+      return;
+    }
+    // 맞히기 시간이면 그림은 이미 다 그려졌으니 그대로 맞히게 둔다
+    if (playerId === d.drawerId && (d.phase === 'choose' || d.phase === 'draw'))
       this.endTurn(room, 'drawerLeft');
-    else this.checkAllGuessed(room, d);
   }
 
   // ── 종료 ─────────────────────────────────────────────────
@@ -659,7 +794,11 @@ export class DrawingHandler {
           score: r.score,
           rank: r.rank,
           playTimeSec: durationSec,
-          extra: { totalRounds: d.totalRounds, ranking },
+          extra: {
+            totalRounds: d.totalRounds,
+            totalTurns: d.totalTurns,
+            ranking,
+          },
         });
       }
     }
@@ -730,8 +869,13 @@ export class DrawingHandler {
       drawing: {
         totalRounds: d.totalRounds,
         drawTimeSec: d.drawTimeSec,
-        round: d.round,
+        turnNumber: d.turnNumber,
+        totalTurns: d.totalTurns,
         turnOrder: d.turnOrder,
+        firstDraw: Object.fromEntries(d.firstDraw),
+        firstPlayerId:
+          d.phase === 'firstDraw' && d.firstDrawDone ? d.nextDrawerId : null,
+        nextDrawerId: d.phase === 'reveal' ? d.nextDrawerId : null,
         phase: d.phase,
         drawerId: d.drawerId,
         word: isDrawer || d.phase === 'reveal' ? d.word : null,
@@ -747,6 +891,14 @@ export class DrawingHandler {
       drawingGameOver: null,
     };
   }
+}
+
+function shuffle<T>(list: T[]): T[] {
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [list[i], list[j]] = [list[j], list[i]];
+  }
+  return list;
 }
 
 // ── 문자열 도우미 ─────────────────────────────────────────

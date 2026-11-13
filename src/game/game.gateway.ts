@@ -1042,6 +1042,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return this.drawingHandler.handleStart(data, client);
   }
 
+  @SubscribeMessage('drawingFirstDraw')
+  handleDrawingFirstDraw(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.drawingHandler.handleFirstDraw(data, client);
+  }
+
   @SubscribeMessage('drawingChoose')
   handleDrawingChoose(
     @MessageBody() data: { roomName: string; index: number },
