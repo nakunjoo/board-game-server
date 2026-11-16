@@ -10,6 +10,7 @@ import { SkulkingHandler } from '../games/skulking/skulking.handler';
 import { DatabaseService } from '../../database/database.service';
 import { Card, Room } from '../game.types';
 import { BotService } from './bot.service';
+import { LiarHandler } from '../games/liar/liar.handler';
 import { createBotSocket, isBotId } from './bot.util';
 import { createGangBot } from './gang.bot';
 import { createSpiceBot } from './spice.bot';
@@ -45,7 +46,13 @@ describe('봇', () => {
     gang = new GangHandler(ctx, factory, fakeDb());
     spice = new SpiceHandler(ctx, factory, fakeDb());
     skulking = new SkulkingHandler(ctx, factory, fakeDb());
-    bots = new BotService(ctx, gang, spice, skulking);
+    bots = new BotService(
+      ctx,
+      gang,
+      spice,
+      skulking,
+      new LiarHandler(ctx, fakeDb()),
+    );
   });
 
   afterEach(() => {
@@ -81,8 +88,8 @@ describe('봇', () => {
       expect(errors(host)).toContain('게임 중에는 봇을 넣고 뺄 수 없습니다');
 
       const h2 = fakeSocket();
-      addRoom(ctx, 'liar', 'liar', [[h2, 'h2']]);
-      bots.addBot({ roomName: 'liar' }, h2, 8);
+      addRoom(ctx, 'draw', 'drawing', [[h2, 'h2']]);
+      bots.addBot({ roomName: 'draw' }, h2, 6);
       expect(errors(h2)).toContain('이 게임은 아직 봇을 지원하지 않습니다');
     });
 
