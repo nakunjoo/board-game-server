@@ -174,6 +174,49 @@ export interface DrawingState {
   nicknames: Map<string, string>; // 중간에 나간 사람도 결과에 이름이 남게
 }
 
+/** 라이어 게임: 한 판의 결과 (결과 화면·재연결용) */
+export interface LiarRoundResult {
+  round: number;
+  liarId: string;
+  liarNickname: string;
+  topic: string;
+  word: string;
+  liarWord: string; // 라이어가 받은 단어 (같은 주제의 다른 단어)
+  accusedId: string | null; // 가장 많이 지목된 사람 (동점·무투표면 null)
+  tally: Record<string, number>; // playerId → 받은 표
+  votes: Record<string, string>; // 투표한 사람 → 지목한 사람
+  liarGuess: string | null;
+  winner: 'liar' | 'citizens' | 'none';
+  reason: 'tie' | 'wrongAccused' | 'guessed' | 'guessFailed' | 'liarLeft';
+  gains: Record<string, number>;
+}
+
+/** 라이어 게임 진행 상태 (게임 중에만 있음) */
+export interface LiarState {
+  totalRounds: number;
+  descLaps: number; // 설명 바퀴 수
+  discussTimeSec: number;
+  minPlayers: number; // 이보다 적게 남으면 끝낸다 (관리자가 혼자 시험할 때는 1)
+  round: number; // 지금 몇 번째 판 (1부터)
+  phase: 'word' | 'describe' | 'discuss' | 'liarGuess' | 'result';
+  topic: string;
+  word: string;
+  liarWord: string; // 라이어에게만 보이는 같은 주제의 다른 단어 (라이어라고는 알리지 않는다)
+  liarId: string;
+  speakOrder: string[]; // 이번 판 설명 순서
+  speakIndex: number; // 0 ~ speakOrder.length × descLaps - 1
+  descriptions: { playerId: string; text: string; lap: number; skipped: boolean }[];
+  votes: Map<string, string>; // 투표한 사람 → 지목한 사람 (토론 중 바꿀 수 있음)
+  accusedId: string | null;
+  phaseEndsAt: number;
+  timer?: ReturnType<typeof setTimeout>;
+  scores: Map<string, number>;
+  nicknames: Map<string, string>; // 중간에 나간 사람도 결과에 이름이 남게
+  usedWords: Set<string>; // 이번 게임에서 쓴 묶음 `주제/묶음번호`
+  lastLiarId: string | null; // 같은 사람이 연달아 라이어가 되지 않게
+  lastResult: LiarRoundResult | null;
+}
+
 export interface PlayerResult {
   nickname: string;
   chips: number[];
@@ -214,6 +257,11 @@ export interface Room {
   };
   skulkingGameOverResult?: { ranking: { playerId: string }[] };
   casinoLastResult?: { players: { playerId: string }[] };
+  liar?: LiarState;
+  liarGameOverResult?: {
+    reason: 'finished' | 'notEnough';
+    ranking: { playerId: string; nickname: string; score: number; rank: number }[];
+  };
   drawing?: DrawingState;
   drawingGameOverResult?: {
     reason: 'finished' | 'notEnough';

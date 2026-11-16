@@ -7,6 +7,7 @@ import { SpiceHandler } from './games/spice/spice.handler';
 import { SkulkingHandler } from './games/skulking/skulking.handler';
 import { CasinoHandler } from './games/casino/casino.handler';
 import { DrawingHandler } from './games/drawing/drawing.handler';
+import { LiarHandler } from './games/liar/liar.handler';
 import { StandardCardEngine } from './engines/standard-card.engine';
 import { SpiceEngine } from './engines/spice.engine';
 import { SkulkingEngine } from './engines/skulking.engine';
@@ -30,6 +31,7 @@ const ENGINES = [StandardCardEngine, SpiceEngine, SkulkingEngine];
     SkulkingHandler,
     CasinoHandler,
     DrawingHandler,
+    LiarHandler,
     GameGateway,
   ],
 })

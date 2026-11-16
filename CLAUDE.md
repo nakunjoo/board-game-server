@@ -10,6 +10,8 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-11-16 | **라이어(`liar`) 추가** — `games/liar/liar.handler.ts`·`liar.words.ts`(주제 15개, 비슷한 단어 3~4개짜리 묶음 110여 개)·`liar.handler.spec.ts`. 3~8명. 게이트웨이: `liarStart`/`liarText`/`liarVote` 등록, 덱 없는 게임 목록(`NO_DECK_GAMES`)에 추가, 끊김/재접속/이탈 연결, `roomJoined`에 `buildLiarState`. `game.types.ts`에 `LiarState`/`LiarRoundResult`, `Room.liar`/`liarGameOverResult`. DB `game_type`에 `'liar'` 추가 필요(SUPABASE_SCHEMA.md) |
+| 2026-11-16 | **방 정원 검사 추가** — 그동안 서버는 인원을 막지 않아 7번째 사람도 들어올 수 있었다. `joinRoom` 신규 입장에서 `GameGateway.MAX_PLAYERS[gameType]`(없으면 6, 라이어 8) 이상이면 `방이 가득 찼습니다 (최대 N명)`. 재연결 대기 중인 사람도 자리를 차지한다 |
 | 2026-11-13 | **음성 통화 제거** — 게이트웨이 `voiceJoin`/`voiceLeave`/`voiceSpeaking`/`voiceSignal` 핸들러와 `Room.voiceParticipants` 삭제 (방 참여 확인이 없어 다른 방 통화를 엿들을 수 있었고, TURN이 없어 휴대폰 데이터망에서 연결이 거의 안 됐음) |
 | 2026-11-13 | 끄적끄적: 문장 속에 정답이 든 말은 다른 사람에게 보내지 않고 보낸 사람에게 `drawingAnswerOnly` (그대로 채팅으로 보내 정답이 새던 문제). 제시어 확인 시간 3초 → 4초(룰렛 연출) |
 | 2026-11-13 | 끄적끄적: 제시어는 고르지 않고 무작위로 뽑는다 — `choose`(3개 중 고르기 10초) → `ready`(뽑힌 제시어를 그리는 사람이 4초(룰렛 연출 2초 + 확인), `READY_TIME_MS`), `drawingChoose`/`drawingChoices` 삭제, 턴 시작 때 `drawingWord`. "거의 맞았어요"(`drawingClose`, `isClose`) 삭제. 정답 비교는 띄어쓰기·기호·이모지·자모(ㅋㅎㅠ)를 빼고(`normalize`) — "고양이?"도 정답 |
@@ -324,6 +326,36 @@ src/
 | `drawingGameOver` | 종료 (reason: finished·notEnough, ranking) |
 
 **재연결:** `roomJoined`의 `drawing`(진행 상태 + 지금까지의 `strokes`, 남은 시간 `timeLeftMs`, 그리는 사람에게만 `word`/`choices`) 또는 `drawingGameOver`(끝난 결과).
+
+## 라이어 (`liar.handler.ts`)
+
+3~8명(관리자는 우회, 그때 `minPlayers` 1). 방장이 `liarStart`로 판 수(1/3/5), 설명 바퀴(1/2), 토론 시간(60/90/120초)을 정한다. 모드 선택은 없다.
+
+**한 판:** `word`(6초, 개인마다 `liarRound` — 주제는 모두 같고, 시민은 제시어, 라이어는 **같은 묶음**의 다른 단어(`liarWord`). 주제만 같으면(피자 ↔ 라면) 한 줄 설명으로 바로 티가 나서, `liar.words.ts`는 주제 아래에 헷갈릴 만큼 비슷한 것끼리(짜장면·짬뽕·우동·칼국수) 묶어 둔다. 결과 때 두 단어가 공개되므로 한 번 쓴 묶음은 그 게임에서 다시 안 쓴다. **라이어에게도 라이어라고 알리지 않는다**(`isLiar`는 모두 false, 지목돼서 `liarGuess`가 될 때에야 그 사람만 true)) → `describe`(판마다 섞은 `speakOrder` 순서로 한 사람씩 30초 `DESC_TIME_MS`, 한 줄 40자. 시간 초과·끊김은 건너뜀, 나간 사람은 빼고 진행) → `discuss`(토론 시간 동안 자유 채팅 + `liarVote`, 바꿀 수 있고 접속한 참가자가 모두 투표하면 바로 마감) → 최다 득표 1명이 라이어면 `liarGuess`(20초, 라이어의 입력이 정답 시도) → `result`(8초) → 다음 판 또는 종료.
+
+**승패:** 동점·무투표(`tie`), 엉뚱한 사람 지목(`wrongAccused`), 라이어가 제시어를 맞힘(`guessed`) → 라이어 +3. 라이어가 못 맞힘(`guessFailed`, 시간 초과 포함) → **라이어에게 투표한 시민만** +1 (엉뚱한 사람을 찍었거나 투표 안 한 시민은 0, 마감 때의 `votes` 기준). 라이어가 나가면 `liarLeft`로 무효(점수 없음). 같은 사람이 연달아 라이어가 되지 않는다(`lastLiarId`).
+
+**입력 규칙(`liarText`):** 자기 단어가 그대로 들어간 말은 `liarBlocked`(보낸 사람에게만) — 시민이 말하면 라이어에게 정답이 새고, 라이어가 말하면 단어가 달라서 바로 들킨다. 정답 비교는 끄적끄적과 같은 `normalize`. 그래서 단어 목록에 한 글자 단어(눈·말·배 등)는 넣지 않고, 한 묶음 안에서 한 단어가 다른 단어를 품지 않게 한다(고래 ↔ 돌고래) — 스펙의 목록 검사가 막는다. `describe` 중 설명 차례인 사람의 입력은 설명(`liarDescription`, 다음 차례로 넘어감), 나머지 사람의 입력은 그냥 채팅(`liarChat`). 투표 대상은 그 판 참가자 중 자기 아닌 사람.
+
+**클라이언트 → 서버:** `liarStart`(rounds, laps, discussTimeSec), `liarText`(text, 100자), `liarVote`(targetId, null이면 취소)
+
+**서버 → 클라이언트:**
+| 이벤트 | 내용 |
+|--------|------|
+| `liarStarted` | 시작 (totalRounds, laps, discussTimeSec, scores) |
+| `liarRound` | 새 판 — 개인 전송 (round, totalRounds, topic, word, isLiar, speakOrder, timeLimitMs) |
+| `liarSpeakTurn` | 설명 차례 (speakerId, nickname, lap, index, timeLimitMs) |
+| `liarDescription` | 설명 한 줄 (playerId, nickname, text, lap, skipped) |
+| `liarDiscuss` | 토론·투표 시작 (timeLimitMs) |
+| `liarVoteUpdate` | 투표한 사람 목록 (voted) — 누구를 찍었는지는 결과 때 공개 |
+| `liarGuessTime` | 라이어가 지목됨 (liarId, nickname, tally, votes, timeLimitMs) |
+| `liarRoundResult` | 판 결과 (`LiarRoundResult` + scores, isLast, timeLimitMs) |
+| `liarChat` | 채팅 (playerId, nickname, text) |
+| `liarBlocked` | 자기 단어가 들어간 말 — 보낸 사람에게만 |
+| `liarPresence` | 연결 끊김/복귀 (playerId, connected) |
+| `liarGameOver` | 종료 (reason: finished·notEnough, ranking) |
+
+**재연결:** `roomJoined`의 `liar`(진행 상태, 내 단어 — 남의 단어는 보내지 않는다, 설명 기록, 투표한 사람·내 투표, 결과, `timeLeftMs`) 또는 `liarGameOver`.
 
 ## Skulking 타이머
 

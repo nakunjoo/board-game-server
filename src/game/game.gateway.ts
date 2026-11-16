@@ -16,6 +16,7 @@ import { SpiceHandler } from './games/spice/spice.handler';
 import { SkulkingHandler } from './games/skulking/skulking.handler';
 import { CasinoHandler } from './games/casino/casino.handler';
 import { DrawingHandler } from './games/drawing/drawing.handler';
+import { LiarHandler } from './games/liar/liar.handler';
 import { DatabaseService } from '../database/database.service';
 import { getSupabaseAdmin } from '../database/supabase-admin';
 
@@ -47,8 +48,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly skulkingHandler: SkulkingHandler,
     private readonly casinoHandler: CasinoHandler,
     private readonly drawingHandler: DrawingHandler,
+    private readonly liarHandler: LiarHandler,
     private readonly supabase: DatabaseService,
   ) {}
+
+  /** 게임별 최대 인원. 웹 utils/games/*.ts의 maxPlayers와 같게 */
+  static readonly MAX_PLAYERS: Record<string, number> = {
+    liar: LiarHandler.MAX_PLAYERS,
+  };
+  static readonly DEFAULT_MAX_PLAYERS = 6;
+
+  /** 카드 덱을 쓰지 않는 게임 */
+  private static readonly NO_DECK_GAMES = ['casino', 'drawing', 'liar'];
 
   // ── 토큰 검증 ─────────────────────────────────────────────
 
@@ -138,6 +149,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         room.disconnectTimers.set(playerId, timer);
         if (room.gameType === 'drawing')
           this.drawingHandler.handleDisconnect(room, playerId);
+        if (room.gameType === 'liar')
+          this.liarHandler.handleDisconnect(room, playerId);
         console.log(
           `'${playerId}' disconnected from '${roomName}', waiting ${GameContext.DISCONNECT_GRACE_MS}ms for reconnect`,
         );
@@ -178,8 +191,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     // 카드를 쓰지 않는 게임
-    const deck =
-      gameType === 'casino' || gameType === 'drawing'
+    const deck = GameGateway.NO_DECK_GAMES.includes(gameType)
         ? []
         : this.engineFactory.get(gameType).createDeck();
 
@@ -323,6 +335,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return this.drawingHandler.buildDrawingState(room, playerId);
     };
 
+    // ── 라이어 재연결 공통 필드 ───────────────────────────────
+    const buildLiarState = () => {
+      if (room.gameType !== 'liar') return {};
+      return this.liarHandler.buildLiarState(room, playerId);
+    };
+
     // ── Spice 재연결 공통 필드 ─────────────────────────────────
     const buildSpiceState = () => {
       const wonCardsMap = room.state.wonCards ?? new Map<string, unknown[]>();
@@ -439,10 +457,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ...skulking,
         ...casino,
         ...drawing,
+        ...buildLiarState(),
       });
 
       if (room.gameType === 'drawing')
         this.drawingHandler.handleReconnect(room, playerId);
+      if (room.gameType === 'liar')
+        this.liarHandler.handleReconnect(room, playerId);
 
       this.ctx.broadcastToRoom(
         name,
@@ -514,6 +535,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ...skulking,
         ...casino,
         ...drawing,
+        ...buildLiarState(),
       });
       return;
     }
@@ -531,6 +553,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (room.gameStarted) {
       this.ctx.sendToClient(client, 'error', {
         message: '이미 게임이 시작된 방입니다',
+      });
+      return;
+    }
+
+    // ── 정원 확인 (재연결 대기 중인 사람도 자리를 차지한다) ─────────
+    const maxPlayers =
+      GameGateway.MAX_PLAYERS[room.gameType] ?? GameGateway.DEFAULT_MAX_PLAYERS;
+    if (room.clients.size >= maxPlayers) {
+      this.ctx.sendToClient(client, 'error', {
+        message: `방이 가득 찼습니다 (최대 ${maxPlayers}명)`,
       });
       return;
     }
@@ -583,6 +615,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       ...skulking,
       ...casino,
       ...drawing,
+      ...buildLiarState(),
     });
 
     this.ctx.broadcastToRoom(
@@ -633,6 +666,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         this.casinoHandler.handlePlayerLeft(room, playerId);
       } else if (room.gameType === 'drawing') {
         this.drawingHandler.handlePlayerLeft(room, playerId);
+      } else if (room.gameType === 'liar') {
+        this.liarHandler.handlePlayerLeft(room, playerId);
       } else {
         this.gangHandler.handlePlayerLeft(room, playerId);
       }
@@ -807,8 +842,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): void | Promise<void> {
     // async 핸들러는 반드시 return 할 것 — 그래야 Nest가 rejection을 잡는다
     const gameType = this.getGameType(data.roomName);
-    // 카지노는 casinoStart, 끄적끄적는 drawingStart로 시작한다
-    if (gameType === 'casino' || gameType === 'drawing') return;
+    // 카지노·끄적끄적·라이어는 각자 시작 이벤트(casinoStart, drawingStart, liarStart)로 시작한다
+    if (GameGateway.NO_DECK_GAMES.includes(gameType)) return;
     if (gameType === 'spice') {
       return this.spiceHandler.handleStartGame(data, client);
     } else if (gameType === 'skulking') {
@@ -1064,5 +1099,37 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: WebSocket,
   ): void {
     this.drawingHandler.handleGuess(data, client);
+  }
+
+  // ── 라이어 전용 이벤트 ───────────────────────────────────
+
+  @SubscribeMessage('liarStart')
+  handleLiarStart(
+    @MessageBody()
+    data: {
+      roomName: string;
+      rounds: number;
+      laps: number;
+      discussTimeSec: number;
+    },
+    @ConnectedSocket() client: WebSocket,
+  ): Promise<void> {
+    return this.liarHandler.handleStart(data, client);
+  }
+
+  @SubscribeMessage('liarText')
+  handleLiarText(
+    @MessageBody() data: { roomName: string; text: unknown },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.liarHandler.handleText(data, client);
+  }
+
+  @SubscribeMessage('liarVote')
+  handleLiarVote(
+    @MessageBody() data: { roomName: string; targetId: unknown },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.liarHandler.handleVote(data, client);
   }
 }

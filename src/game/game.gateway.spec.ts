@@ -50,6 +50,7 @@ describe('GameGateway', () => {
       {} as any,
       casino as any,
       {} as any,
+      {} as any,
       fakeDb(),
     );
     host = fakeSocket();
