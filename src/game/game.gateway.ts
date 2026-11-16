@@ -17,6 +17,7 @@ import { SkulkingHandler } from './games/skulking/skulking.handler';
 import { CasinoHandler } from './games/casino/casino.handler';
 import { DrawingHandler } from './games/drawing/drawing.handler';
 import { LiarHandler } from './games/liar/liar.handler';
+import { BotService } from './bots/bot.service';
 import { DatabaseService } from '../database/database.service';
 import { getSupabaseAdmin } from '../database/supabase-admin';
 
@@ -50,6 +51,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly drawingHandler: DrawingHandler,
     private readonly liarHandler: LiarHandler,
     private readonly supabase: DatabaseService,
+    private readonly bots: BotService,
   ) {}
 
   /** 게임별 최대 인원. 웹 utils/games/*.ts의 maxPlayers와 같게 */
@@ -1131,5 +1133,28 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: WebSocket,
   ): void {
     this.liarHandler.handleVote(data, client);
+  }
+
+  // ── 봇 (방장 전용, 게임 시작 전) ──────────────────────────
+
+  @SubscribeMessage('addBot')
+  handleAddBot(
+    @MessageBody() data: { roomName: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    const gameType = this.getGameType(data.roomName);
+    this.bots.addBot(
+      data,
+      client,
+      GameGateway.MAX_PLAYERS[gameType] ?? GameGateway.DEFAULT_MAX_PLAYERS,
+    );
+  }
+
+  @SubscribeMessage('removeBot')
+  handleRemoveBot(
+    @MessageBody() data: { roomName: string; playerId?: string },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.bots.removeBot(data, client);
   }
 }

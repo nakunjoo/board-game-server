@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { Card, Room, PlayerHand } from './game.types';
+import { BotSocket, isBotId } from './bots/bot.util';
 
 /**
  * 모든 게임이 공유하는 상태(rooms, clients)와 유틸 메서드를 제공합니다.
@@ -125,6 +126,25 @@ export class GameContext {
     room.playerIds.delete(client);
     room.nicknames.delete(client);
     this.clientRooms.get(client)?.delete(roomName);
+    // 봇이 어떤 길로든(빼기·강퇴) 나가면 그 소켓은 닫는다 (이후 이벤트를 받지 않게)
+    if (isBotId(playerId)) (client as unknown as BotSocket).close?.();
+
+    // 사람이 모두 나가 봇만 남으면 봇도 빼고 방을 닫는다 (봇끼리 계속 도는 방이 남지 않게).
+    // 게임 핸들러는 빈 방으로 handlePlayerLeft를 받아 타이머를 정리한다
+    if (
+      room.clients.size > 0 &&
+      Array.from(room.playerIds.values()).every((id) => isBotId(id))
+    ) {
+      for (const bot of Array.from(room.clients)) {
+        (bot as unknown as BotSocket).close?.();
+        const i = room.state.playerOrder.indexOf(bot);
+        if (i !== -1) room.state.playerOrder.splice(i, 1);
+        room.state.hands.delete(bot);
+        room.clients.delete(bot);
+        room.playerIds.delete(bot);
+        room.nicknames.delete(bot);
+      }
+    }
 
     if (room.clients.size === 0) {
       this.rooms.delete(roomName);
@@ -145,10 +165,13 @@ export class GameContext {
     return playerId ? { room, playerId, orderIndex } : null;
   }
 
-  /** 끊겨서 유예 중인 사람보다 접속 중인 사람에게 먼저 방장을 넘긴다 */
+  /** 끊겨서 유예 중인 사람보다 접속 중인 사람에게 먼저 방장을 넘긴다. 봇은 방장이 되지 않는다 */
   private delegateHost(room: Room): void {
-    const clients = Array.from(room.playerIds.keys());
+    const clients = Array.from(room.playerIds.keys()).filter(
+      (c) => !isBotId(room.playerIds.get(c)),
+    );
     const next = clients.find((c) => c.readyState === WebSocket.OPEN) ?? clients[0];
+    if (!next) return;
     room.hostPlayerId = room.playerIds.get(next) ?? '';
     room.hostNickname = room.nicknames.get(next) ?? '';
   }

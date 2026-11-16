@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { GameSession } from './entities/game-session.entity';
 import { GamePlayerResult } from './entities/game-player-result.entity';
 import { Admin } from './entities/admin.entity';
+import { isBotId } from '../game/bots/bot.util';
 
 export interface CreateSessionParams {
   roomName: string;
@@ -50,6 +51,8 @@ export class DatabaseService {
   ) {}
 
   async isAdmin(userId: string): Promise<boolean> {
+    // 봇 id는 uuid가 아니라 그대로 조회하면 DB 오류가 난다
+    if (isBotId(userId)) return false;
     const count = await this.adminRepo.count({ where: { userId } });
     return count > 0;
   }
@@ -76,7 +79,8 @@ export class DatabaseService {
 
   async insertPlayerResults(players: InsertPlayerParams[]): Promise<void> {
     try {
-      const rows = players.map((p) =>
+      // 봇은 전적에 넣지 않는다. 섞이면 uuid·회원 제약 때문에 한 묶음 전체(사람 기록까지)가 실패한다
+      const rows = players.filter((p) => !isBotId(p.userId)).map((p) =>
         this.playerResultRepo.create({
           sessionId: p.sessionId,
           userId: p.userId,
@@ -95,6 +99,7 @@ export class DatabaseService {
     userId: string,
     reason: 'voluntary' | 'disconnected' = 'disconnected',
   ): Promise<void> {
+    if (isBotId(userId)) return;
     try {
       await this.playerResultRepo.update(
         { sessionId, userId },
@@ -109,6 +114,7 @@ export class DatabaseService {
   }
 
   async finalizePlayerResult(params: FinalizePlayerParams): Promise<void> {
+    if (isBotId(params.userId)) return;
     try {
       await this.playerResultRepo.update(
         { sessionId: params.sessionId, userId: params.userId },

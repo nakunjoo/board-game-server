@@ -1064,7 +1064,8 @@ export class SkulkingHandler {
 
   // ── 트릭 승자 판정 ────────────────────────────────────────
 
-  private determineTrickWinner(
+  /** 봇(bots/skulking.bot.ts)도 같은 판정을 쓰도록 공개 */
+  determineTrickWinner(
     trick: Array<{ playerId: string; card: Card; tigressDeclared?: 'escape' | 'pirate' }>,
   ): string {
     // Skull King 찾기
@@ -1122,7 +1123,7 @@ export class SkulkingHandler {
     return trick[0].playerId;
   }
 
-  private getEffectiveType(
+  getEffectiveType(
     entry: { card: Card; tigressDeclared?: 'escape' | 'pirate' },
   ): string {
     if (entry.card.type === 'sk-tigress') {
@@ -1131,7 +1132,7 @@ export class SkulkingHandler {
     return entry.card.type;
   }
 
-  private isNumberSuit(type: string): boolean {
+  isNumberSuit(type: string): boolean {
     return ['sk-black', 'sk-yellow', 'sk-purple', 'sk-green'].includes(type);
   }
 

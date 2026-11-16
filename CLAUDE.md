@@ -10,6 +10,7 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-11-16 | **봇 플레이어 추가 (갱스터·스컬킹·향신료)** — `game/bots/`. 아래 "봇" 섹션 참조. `GameContext`: 사람이 모두 나가면 봇도 빼고 방을 닫음, 방장 위임에서 봇 제외. `DatabaseService`: 봇 id(`bot:`)는 `isAdmin`·`insertPlayerResults`·`finalizePlayerResult`·`markAbandoned`에서 건너뜀 (섞이면 한 묶음 전체가 실패해 사람 기록까지 사라짐). `GangHandler.evaluateHand`, `SkulkingHandler.determineTrickWinner`/`getEffectiveType`/`isNumberSuit`를 public으로(봇이 같은 판정을 씀) |
 | 2026-11-16 | **라이어(`liar`) 추가** — `games/liar/liar.handler.ts`·`liar.words.ts`(주제 15개, 비슷한 단어 3~4개짜리 묶음 110여 개)·`liar.handler.spec.ts`. 3~8명. 게이트웨이: `liarStart`/`liarText`/`liarVote` 등록, 덱 없는 게임 목록(`NO_DECK_GAMES`)에 추가, 끊김/재접속/이탈 연결, `roomJoined`에 `buildLiarState`. `game.types.ts`에 `LiarState`/`LiarRoundResult`, `Room.liar`/`liarGameOverResult`. DB `game_type`에 `'liar'` 추가 필요(SUPABASE_SCHEMA.md) |
 | 2026-11-16 | **방 정원 검사 추가** — 그동안 서버는 인원을 막지 않아 7번째 사람도 들어올 수 있었다. `joinRoom` 신규 입장에서 `GameGateway.MAX_PLAYERS[gameType]`(없으면 6, 라이어 8) 이상이면 `방이 가득 찼습니다 (최대 N명)`. 재연결 대기 중인 사람도 자리를 차지한다 |
 | 2026-11-13 | **음성 통화 제거** — 게이트웨이 `voiceJoin`/`voiceLeave`/`voiceSpeaking`/`voiceSignal` 핸들러와 `Room.voiceParticipants` 삭제 (방 참여 확인이 없어 다른 방 통화를 엿들을 수 있었고, TURN이 없어 휴대폰 데이터망에서 연결이 거의 안 됐음) |
@@ -326,6 +327,23 @@ src/
 | `drawingGameOver` | 종료 (reason: finished·notEnough, ranking) |
 
 **재연결:** `roomJoined`의 `drawing`(진행 상태 + 지금까지의 `strokes`, 남은 시간 `timeLeftMs`, 그리는 사람에게만 `word`/`choices`) 또는 `drawingGameOver`(끝난 결과).
+
+## 봇 (`game/bots/`)
+
+사람이 모자랄 때 빈자리를 채우거나 혼자 연습하려고 방장이 대기 중인 방에 넣는 플레이어. 지금은 **갱스터·스컬킹·향신료**만(`BotService.SUPPORTED_GAMES`).
+
+**구조:** 봇은 서버 안의 가짜 소켓(`bot.util.ts` `createBotSocket`). 방의 `clients`·`playerIds`·`nicknames`·`playerOrder`·`hands`에 사람과 똑같이 들어가므로 게임 핸들러는 봇을 모른다. 서버가 그 소켓으로 보낸 이벤트를 다음 틱에 두뇌(`gang.bot.ts`·`skulking.bot.ts`·`spice.bot.ts`)가 받아, 잠깐 생각한 뒤(1~2초) 핸들러 메서드를 사람처럼 부른다. **동기로 되부르면 안 된다** — 핸들러가 브로드캐스트하는 도중이라 차례·타이머가 꼬인다. `bot.brain.ts`의 `botScheduler`가 같은 이름의 할 일은 하나만 걸고, 실행할 때 봇이 아직 방에 있는지 다시 본다. 봇은 사람과 같은 정보만 쓴다(자기 손패·공개 정보. 서버 상태에서 읽되 남의 손패는 보지 않는다).
+- id `bot:…`, 닉네임 `🤖봇1~8`. 전적(DB)에 넣지 않는다. 방장이 되지 않는다. 사람이 모두 나가면 봇도 빠지고 방이 닫힌다
+- 정원(`MAX_PLAYERS`)·최소 인원 검사에 사람처럼 들어간다 (갱스터 3명 = 나 + 봇 2)
+
+**이벤트 (클라이언트 → 서버, 방장 전용·게임/선뽑기 시작 전):** `addBot {roomName}`, `removeBot {roomName, playerId?}`(없으면 마지막 봇). 결과는 사람과 같은 `userJoined`/`userLeft`.
+
+**두뇌**
+- 갱스터: 단계마다 내 패 + 공개 카드로 남은 카드를 몇백 번 가상으로 나눠 내 순위를 어림(`estimateStrength`, `evaluateHand` 재사용)하고, 그 번호에 가장 가까운 **빈** 칩을 고른 뒤 OK. 봇은 칩을 빼앗지 않는다(봇끼리 끝없이 빼앗는 걸 막으려고). 빼앗기면 다시 고른다. 라운드가 끝나면 다음 라운드 준비. 측정: 봇 4명 승률 약 40%, 6명 약 20%
+- 스컬킹: 선뽑기는 바로. 비드는 카드별 이길 확률의 합(사람이 많을수록 낮춤). 카드는 리드 수트 규칙 안에서, 비드를 못 채웠으면 지금 이기는 가장 약한 카드, 채웠으면 지는 카드 중 가장 센 카드(`determineTrickWinner`로 미리 따져 봄). Tigress는 이기고 싶으면 해적. 측정: 비드 적중 약 59%
+- 향신료: 참말로 낼 수 있으면 가장 작은 숫자 → 없으면 와일드(70%) → 거짓말(30%, 마지막 한 장이면 항상) → 패스. 도전은 봇 한 명당 낮은 확률(기본 3%)에, 선언 카드를 2장 이상 들고 있으면(+45%)·상대가 마지막 한 장을 냈으면(+35%) 크게 올린다. 처음엔 기본 10%였는데 낸 카드의 37%가 도전받아 아무도 트로피를 못 땄다. 지금은 약 19%, 20게임 중 16게임이 트로피로 끝남
+
+**테스트:** `bots/bot.spec.ts` — 넣고 빼기 권한·정원·방 닫힘·방장 위임·DB 제외, 그리고 방장 자리까지 봇 두뇌로 돌려 세 게임이 끝까지 가는지(서버가 거절한 행동 0, 스컬킹 자동 비드 0, 향신료 시간 초과 자동 패스 0). `bots/bot.scenarios.spec.ts` — 게이트웨이를 거쳐: 끝난 뒤 다시 시작해 두 게임 연속, 강퇴로 봇 내보내기(소켓 닫힘), 게임 중 사람이 나가도 이어짐, 마지막 사람이 끊기면 30초 유예 뒤 봇과 함께 방 정리(이후 남은 타이머도 문제없음), 사람 1 + 봇 5 꽉 찬 판(7번째 거절).
 
 ## 라이어 (`liar.handler.ts`)
 

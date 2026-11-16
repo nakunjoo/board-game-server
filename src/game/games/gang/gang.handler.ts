@@ -961,7 +961,8 @@ export class GangHandler {
     return true;
   }
 
-  private evaluateHand(
+  /** 봇(bots/gang.bot.ts)도 같은 족보 계산을 쓰도록 공개 */
+  evaluateHand(
     myCards: any[],
     openCards: any[],
   ): { score: number; tiebreakers: number[]; detailName: string } {

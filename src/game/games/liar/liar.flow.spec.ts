@@ -53,6 +53,7 @@ describe('라이어 게임 흐름 (게이트웨이 경유)', () => {
       {} as any,
       liar,
       fakeDb(),
+      {} as any,
     );
     socks = new Map();
     const host = connectAs('p1');
