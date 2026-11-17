@@ -10,6 +10,7 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-11-17 | 마피아 점검 후속 — **역할이 목록 순서로 드러나던 문제**: 섞은 순서 그대로 `roles`·`alive`에 담아, 모두에게 보내는 `mafiaStarted.players`·`mafiaDay/Executed.alive`·`roomJoined.mafia.players/alive`의 앞쪽이 마피아→경찰→의사였다. 이제 역할만 섞어 정하고 목록은 입장 순서(테스트 추가). `buildMafiaState`에 `nicknames`(게임 중에 나간 사람 자리 이름용). **의사는 6명부터**(4~5명은 마피아 1·경찰 1·시민). 인원별 역할 수 테스트(4~8명 × 200번) 추가 |
 | 2026-11-16 | **마피아(`mafia`) 추가** — `games/mafia/mafia.handler.ts`·`mafia.handler.spec.ts`, 마피아 봇 `bots/mafia.bot.ts`·`mafia.bot.spec.ts`. 4~8명. 게이트웨이: `mafiaStart`/`mafiaText`/`mafiaAction` 등록, `MAX_PLAYERS` 8, `NO_DECK_GAMES`에 추가, 끊김/재접속/이탈 연결, `roomJoined`에 `buildMafiaState`. `game.types.ts`에 `MafiaRole`/`MafiaState`/`MafiaGameOver`, `Room.mafia`/`mafiaGameOverResult`. 아래 "마피아" 참조. DB `game_type`에 `'mafia'` 추가 필요(SUPABASE_SCHEMA.md) |
 | 2026-11-16 | **라이어 봇 (LLM)** — `bots/liar.bot.ts`, `bots/llm.ts`(OpenAI fetch, 키 없거나 실패하면 미리 써 둔 문장). `BotService`에 `LiarHandler` 주입·`SUPPORTED_GAMES`에 `liar`. 아래 "봇" 참조. VM `~/.env.production`에 `OPENAI_API_KEY` 필요 |
 | 2026-11-16 | **봇 플레이어 추가 (갱스터·스컬킹·향신료)** — `game/bots/`. 아래 "봇" 섹션 참조. `GameContext`: 사람이 모두 나가면 봇도 빼고 방을 닫음, 방장 위임에서 봇 제외. `DatabaseService`: 봇 id(`bot:`)는 `isAdmin`·`insertPlayerResults`·`finalizePlayerResult`·`markAbandoned`에서 건너뜀 (섞이면 한 묶음 전체가 실패해 사람 기록까지 사라짐). `GangHandler.evaluateHand`, `SkulkingHandler.determineTrickWinner`/`getEffectiveType`/`isNumberSuit`를 public으로(봇이 같은 판정을 씀) |
@@ -384,7 +385,7 @@ src/
 
 ## 마피아 (`mafia.handler.ts`)
 
-4~8명(관리자는 우회, 그때 `minPlayers` 1). 방장이 `mafiaStart`로 낮 토론 시간(90/120/180초)을 정한다. 역할: 마피아(4~5명 1, 6~8명 2), 경찰 1, 의사 1, 나머지 시민. **역할은 죽어도 공개하지 않고** 게임이 끝날 때 모두 공개.
+4~8명(관리자는 우회, 그때 `minPlayers` 1). **역할은 섞어서 정하되 `roles`·`alive`·참가자 목록은 입장 순서로 담는다** — 모두에게 가는 목록이라 섞은 순서면 역할이 드러난다. 방장이 `mafiaStart`로 낮 토론 시간(90/120/180초)을 정한다. 역할: 4~5명은 마피아 1·경찰 1·나머지 시민(의사 없음), 6~8명은 마피아 2·경찰 1·의사 1·나머지 시민(`mafiaCount`/`doctorCount`, 웹 `MafiaSetupPanel`과 같게). **역할은 죽어도 공개하지 않고** 게임이 끝날 때 모두 공개.
 
 **진행:** `role`(6초, 개인마다 `mafiaRole` — 마피아만 동료를 안다) → `night`(30초) → `day`(토론 시간) → 처형 결과 5초 → 다음 밤(`day`+1) … 승부가 날 때까지.
 - 밤(`mafiaAction`): 마피아는 동료 아닌 산 사람을 지목(바꿀 수 있음, 여럿이면 가장 많이 고른 사람·같으면 먼저 고른 사람), 경찰은 하룻밤 한 명 조사(자기 제외, 결과 `mafiaInvestigated`는 경찰에게만 바로), 의사는 한 명 살리기(자기 자신도 언제나, 바꿀 수 있음). 접속 중인 산 마피아·경찰·의사가 할 일을 다 하면 시간 전에 끝난다

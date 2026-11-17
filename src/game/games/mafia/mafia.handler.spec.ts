@@ -89,17 +89,20 @@ describe('MafiaHandler', () => {
     });
 
     it.each([
-      [4, 1],
-      [5, 1],
-      [6, 2],
-      [8, 2],
-    ])('%i명이면 마피아 %i명, 경찰·의사 1명씩', async (n, mafias) => {
-      await setup(n);
-      expect(withRole('mafia')).toHaveLength(mafias);
-      expect(withRole('police')).toHaveLength(1);
-      expect(withRole('doctor')).toHaveLength(1);
-      expect(withRole('citizen')).toHaveLength(n - mafias - 2);
-    });
+      [4, 1, 0],
+      [5, 1, 0],
+      [6, 2, 1],
+      [8, 2, 1],
+    ])(
+      '%i명이면 마피아 %i명, 경찰 1명, 의사 %i명',
+      async (n, mafias, doctors) => {
+        await setup(n);
+        expect(withRole('mafia')).toHaveLength(mafias);
+        expect(withRole('police')).toHaveLength(1);
+        expect(withRole('doctor')).toHaveLength(doctors);
+        expect(withRole('citizen')).toHaveLength(n - mafias - 1 - doctors);
+      },
+    );
 
     it('역할은 각자에게만, 마피아만 동료를 안다', async () => {
       await setup(6);
@@ -120,6 +123,54 @@ describe('MafiaHandler', () => {
         expect(st).not.toContain(`"mafiaTeam":["${id}`);
       expect(st).not.toContain('"roles"');
     });
+    it('4~8명 모두 한 사람에 역할 하나, 인원별 역할 수가 맞고 누구나 어떤 역할이든 받을 수 있다', async () => {
+      for (let n = 4; n <= 8; n++) {
+        const got = new Map<string, Set<string>>();
+        for (let t = 0; t < 200; t++) {
+          jest.clearAllTimers();
+          ctx = new GameContext();
+          handler = new MafiaHandler(ctx, fakeDb());
+          await setup(n);
+          expect([...m().roles.keys()].sort()).toEqual([...ids].sort());
+          const count = (r: MafiaRole) => withRole(r).length;
+          expect(count('mafia')).toBe(n >= 6 ? 2 : 1);
+          expect(count('police')).toBe(1);
+          expect(count('doctor')).toBe(n >= 6 ? 1 : 0);
+          expect(count('citizen')).toBe(
+            n - count('mafia') - 1 - count('doctor'),
+          );
+          for (const [i, id] of ids.entries()) {
+            const sent = receivedEvent(socks[i], 'mafiaRole');
+            expect(sent).toHaveLength(1);
+            expect((sent[0].data as { role: string }).role).toBe(
+              m().roles.get(id),
+            );
+            const seen = got.get(id) ?? new Set<string>();
+            seen.add(m().roles.get(id)!);
+            got.set(id, seen);
+          }
+        }
+        for (const id of ids) expect(got.get(id)!.size).toBe(n >= 6 ? 4 : 3);
+      }
+    });
+    it('모두에게 보내는 참가자·생존자 목록은 입장 순서라 역할이 드러나지 않는다', async () => {
+      for (let t = 0; t < 20; t++) {
+        jest.clearAllTimers();
+        ctx = new GameContext();
+        handler = new MafiaHandler(ctx, fakeDb());
+        await setup(8);
+        const started = receivedEvent(socks[1], 'mafiaStarted')[0].data as {
+          players: string[];
+        };
+        expect(started.players).toEqual(ids);
+        const st = handler.buildMafiaState(room, ids[1]).mafia as {
+          players: string[];
+          alive: string[];
+        };
+        expect(st.players).toEqual(ids);
+        expect(st.alive).toEqual(ids);
+      }
+    });
   });
 
   describe('밤', () => {
@@ -135,7 +186,7 @@ describe('MafiaHandler', () => {
     });
 
     it('의사가 살리면 아무도 죽지 않는다 (자기 자신도 언제나)', async () => {
-      await setup(5);
+      await setup(6);
       const doctor = withRole('doctor')[0];
       night(doctor, doctor);
       expect(m().alive.has(doctor)).toBe(true);

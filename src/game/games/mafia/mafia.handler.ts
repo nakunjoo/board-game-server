@@ -58,6 +58,11 @@ export class MafiaHandler {
     return players >= 6 ? 2 : 1;
   }
 
+  /** 의사는 6명부터 (4~5명은 마피아 1명이라 의사까지 있으면 마피아가 너무 불리하다) */
+  static doctorCount(players: number): number {
+    return players >= 6 ? 1 : 0;
+  }
+
   // ── 시작 ─────────────────────────────────────────────────
 
   async handleStart(
@@ -84,20 +89,24 @@ export class MafiaHandler {
     if (room.gameStarted) return;
 
     const players = this.ctx.getPlayersWithOrder(room);
-    const ids = shuffle(players.map((p) => p.playerId));
-    const roles = new Map<string, MafiaRole>();
+    // 입장 순서. 역할은 섞은 순서로 정하되, 목록(roles·alive)은 입장 순서로 담는다 —
+    // 섞은 순서 그대로 담으면 모두에게 보내는 참가자·생존자 목록의 앞쪽이 마피아→경찰→의사가 되어 역할이 드러났다
+    const ids = players.map((p) => p.playerId);
     const mafiaCount = MafiaHandler.mafiaCount(ids.length);
-    ids.forEach((id, i) =>
-      roles.set(
+    const roleOf = new Map<string, MafiaRole>(
+      shuffle([...ids]).map((id, i) => [
         id,
         i < mafiaCount
           ? 'mafia'
           : i === mafiaCount
             ? 'police'
-            : i === mafiaCount + 1
+            : i === mafiaCount + 1 && MafiaHandler.doctorCount(ids.length) > 0
               ? 'doctor'
               : 'citizen',
-      ),
+      ]),
+    );
+    const roles = new Map<string, MafiaRole>(
+      ids.map((id) => [id, roleOf.get(id)!]),
     );
 
     room.gameStarted = true;
@@ -599,6 +608,7 @@ export class MafiaHandler {
         lastExecution: m.lastExecution,
         timeLeftMs: Math.max(0, m.phaseEndsAt - Date.now()),
         away: [...room.disconnectTimers.keys()],
+        nicknames: Object.fromEntries(m.nicknames),
       },
       mafiaGameOver: null,
     };
