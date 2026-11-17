@@ -10,8 +10,6 @@ import { SkulkingHandler } from '../games/skulking/skulking.handler';
 import { DatabaseService } from '../../database/database.service';
 import { Card, Room } from '../game.types';
 import { BotService } from './bot.service';
-import { MafiaHandler } from '../games/mafia/mafia.handler';
-import { LiarHandler } from '../games/liar/liar.handler';
 import { createBotSocket, isBotId } from './bot.util';
 import { createGangBot } from './gang.bot';
 import { createSpiceBot } from './spice.bot';
@@ -47,14 +45,7 @@ describe('봇', () => {
     gang = new GangHandler(ctx, factory, fakeDb());
     spice = new SpiceHandler(ctx, factory, fakeDb());
     skulking = new SkulkingHandler(ctx, factory, fakeDb());
-    bots = new BotService(
-      ctx,
-      gang,
-      spice,
-      skulking,
-      new LiarHandler(ctx, fakeDb()),
-      new MafiaHandler(ctx, fakeDb()),
-    );
+    bots = new BotService(ctx, gang, spice, skulking);
   });
 
   afterEach(() => {
@@ -93,6 +84,14 @@ describe('봇', () => {
       addRoom(ctx, 'draw', 'drawing', [[h2, 'h2']]);
       bots.addBot({ roomName: 'draw' }, h2, 6);
       expect(errors(h2)).toContain('이 게임은 아직 봇을 지원하지 않습니다');
+      // 라이어·마피아는 말로 속이는 게임이라 봇을 뺐다
+      for (const game of ['liar', 'mafia']) {
+        const h = fakeSocket();
+        const r = addRoom(ctx, game, game, [[h, `h-${game}`]]);
+        bots.addBot({ roomName: game }, h, 8);
+        expect(errors(h)).toContain('이 게임은 아직 봇을 지원하지 않습니다');
+        expect(r.clients.size).toBe(1);
+      }
     });
 
     it('빼면 마지막 봇(또는 지정한 봇)이 나가고 userLeft가 간다', () => {

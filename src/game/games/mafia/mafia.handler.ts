@@ -35,6 +35,7 @@ import { DatabaseService } from '../../../database/database.service';
  *   mafiaChat      {playerId, nickname, text, scope: 'all'|'mafia'|'dead'}
  *   mafiaSilent    보낸 사람에게만: 지금은 말할 수 없음
  *   mafiaWhisperLate 보낸 사람에게만: 밤이 끝나 마피아끼리 하려던 말을 보내지 않음
+ *   mafiaTimer     밤 할 일이 일찍 끝나 남은 시간이 줄었음 (timeLimitMs)
  *   mafiaPresence  연결 끊김/복귀
  *   mafiaGameOver  승부·모든 역할
  */
@@ -216,8 +217,15 @@ export class MafiaHandler {
       this.endNight(room);
       return;
     }
+    // 이미 줄여 놨으면 다시 늦추지 않는다 (의사가 대상을 바꿔도 다시 불린다)
+    if (m.phaseEndsAt <= Date.now() + wait) return;
     this.clearTimer(m);
     m.phaseEndsAt = Date.now() + wait;
+    // 화면 타이머도 맞춘다 — 안 그러면 30초짜리가 남은 채로 갑자기 아침이 됐다
+    this.ctx.broadcastToRoom(room.name, 'mafiaTimer', {
+      roomName: room.name,
+      timeLimitMs: wait,
+    });
     m.timer = setTimeout(() => {
       if (room.mafia === m && m.phase === 'night') this.endNight(room);
     }, wait);

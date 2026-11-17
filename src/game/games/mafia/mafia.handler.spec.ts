@@ -391,6 +391,12 @@ describe('MafiaHandler', () => {
       jest.advanceTimersByTime(1000);
       expect(m().phase).toBe('day');
       expect(m().alive.has(victim)).toBe(false);
+      // 줄어든 남은 시간을 화면에도 알린다
+      const t = receivedEvent(socks[0], 'mafiaTimer');
+      expect(t).toHaveLength(1);
+      expect(
+        (t[0].data as { timeLimitMs: number }).timeLimitMs,
+      ).toBeLessThanOrEqual(MafiaHandler.MIN_NIGHT_MS);
     });
   });
 });

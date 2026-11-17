@@ -9,11 +9,6 @@ import { BotBrain, BotSelf } from './bot.brain';
 import { createGangBot } from './gang.bot';
 import { createSkulkingBot } from './skulking.bot';
 import { createSpiceBot } from './spice.bot';
-import { createLiarBot } from './liar.bot';
-import { createMafiaBot } from './mafia.bot';
-import { MafiaHandler } from '../games/mafia/mafia.handler';
-import { LiarHandler } from '../games/liar/liar.handler';
-import { callLlm, LlmCall } from './llm';
 
 /**
  * 방장이 대기 중인 방에 봇을 넣고 뺀다 (사람이 모자랄 때 채우기, 혼자 연습).
@@ -27,24 +22,15 @@ import { callLlm, LlmCall } from './llm';
  */
 @Injectable()
 export class BotService {
-  static readonly SUPPORTED_GAMES = [
-    'gang',
-    'spice',
-    'skulking',
-    'liar',
-    'mafia',
-  ];
+  // 라이어·마피아는 2026-11-17에 뺐다 — 말로 속이는 게임이라 봇(LLM)이 끼면 의미가 없었다
+  static readonly SUPPORTED_GAMES = ['gang', 'spice', 'skulking'];
   private seq = 0;
-  /** 말하는 게임(라이어)의 LLM 호출. 테스트에서 가짜로 바꾼다 */
-  llm: LlmCall = callLlm;
 
   constructor(
     private readonly ctx: GameContext,
     private readonly gang: GangHandler,
     private readonly spice: SpiceHandler,
     private readonly skulking: SkulkingHandler,
-    private readonly liar: LiarHandler,
-    private readonly mafia: MafiaHandler,
   ) {}
 
   /** 요청한 사람이 이 방의 방장이고, 게임 시작 전이고, 봇을 지원하는 게임인지. 아니면 에러를 보내고 null */
@@ -139,13 +125,6 @@ export class BotService {
         return createSkulkingBot(this.ctx, this.skulking, self);
       case 'spice':
         return createSpiceBot(this.ctx, this.spice, self);
-      case 'liar':
-        // 호출할 때마다 this.llm을 읽어 테스트에서 바꾼 가짜도 쓰이게
-        return createLiarBot(this.ctx, this.liar, self, (req) => this.llm(req));
-      case 'mafia':
-        return createMafiaBot(this.ctx, this.mafia, self, (req) =>
-          this.llm(req),
-        );
       default:
         return () => {};
     }
