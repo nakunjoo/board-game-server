@@ -8,7 +8,7 @@ import { DatabaseService } from '../../../database/database.service';
  * 마피아 게임 핸들러
  *
  * 4~8명. 역할: 마피아(4~5명이면 1, 6~8명이면 2), 경찰 1, 의사 1, 나머지 시민. 역할은 죽어도 공개하지 않고 게임이 끝날 때 공개.
- * 역할 확인(6초) → 밤(30초) → 낮(토론·투표) → 밤 … 을 승부가 날 때까지.
+ * 역할 확인(10초) → 밤(30초, 할 일이 끝나도 최소 10초) → 낮(토론·투표) → 밤 … 을 승부가 날 때까지.
  *   - 밤: 마피아끼리 비밀 채팅·죽일 사람 지목(여럿이면 가장 많이 고른 사람, 같으면 먼저 고른 사람),
  *         경찰은 한 명 조사(결과는 경찰에게만 바로), 의사는 한 명 살리기(자기 자신도 언제나 가능).
  *         살아 있는 사람이 할 일을 다 하면 바로 끝난다
@@ -43,10 +43,12 @@ export class MafiaHandler {
   static readonly MIN_PLAYERS = 4;
   static readonly MAX_PLAYERS = 8;
   static readonly ALLOWED_DISCUSS_TIMES = [90, 120, 180];
-  static readonly ROLE_TIME_MS = 6_000;
+  static readonly ROLE_TIME_MS = 10_000;
   static readonly NIGHT_TIME_MS = 30_000;
+  /** 할 일이 다 끝나도 밤은 이만큼은 간다 — 봇이 몇 초 만에 다 고르면 밤이 지나간 줄도 몰랐다 */
+  static readonly MIN_NIGHT_MS = 10_000;
   /** 처형 결과를 보여 준 뒤 밤이 되기까지 */
-  static readonly EXECUTION_SHOW_MS = 5_000;
+  static readonly EXECUTION_SHOW_MS = 8_000;
   static readonly MAX_TEXT_LENGTH = 100;
 
   constructor(
@@ -179,6 +181,7 @@ export class MafiaHandler {
     m.investigated = null;
     m.healed = null;
     m.votes = new Map();
+    m.nightStartedAt = Date.now();
     m.phaseEndsAt = Date.now() + MafiaHandler.NIGHT_TIME_MS;
     this.ctx.broadcastToRoom(room.name, 'mafiaNight', {
       roomName: room.name,
@@ -201,6 +204,23 @@ export class MafiaHandler {
       (police.length === 0 || m.investigated !== null) &&
       (doctor.length === 0 || m.healed !== null)
     );
+  }
+
+  /** 할 일이 다 끝났으면 밤을 끝낸다. 단 최소 시간이 안 지났으면 그때까지 기다린다 */
+  private maybeEndNight(room: Room): void {
+    const m = room.mafia!;
+    if (m.phase !== 'night' || !this.nightDone(room, m)) return;
+    const wait =
+      (m.nightStartedAt ?? 0) + MafiaHandler.MIN_NIGHT_MS - Date.now();
+    if (wait <= 0) {
+      this.endNight(room);
+      return;
+    }
+    this.clearTimer(m);
+    m.phaseEndsAt = Date.now() + wait;
+    m.timer = setTimeout(() => {
+      if (room.mafia === m && m.phase === 'night') this.endNight(room);
+    }, wait);
   }
 
   private endNight(room: Room): void {
@@ -339,7 +359,7 @@ export class MafiaHandler {
     } else {
       return;
     }
-    if (this.nightDone(room, m)) this.endNight(room);
+    this.maybeEndNight(room);
   }
 
   // ── 채팅 ─────────────────────────────────────────────────
@@ -488,7 +508,7 @@ export class MafiaHandler {
       connected: false,
     });
     // 끊긴 사람을 기다리지 않는다
-    if (m.phase === 'night' && this.nightDone(room, m)) this.endNight(room);
+    if (m.phase === 'night') this.maybeEndNight(room);
     if (m.phase === 'day') {
       const voters = this.aliveIn(room, m).filter(
         (id) => !room.disconnectTimers.has(id),
@@ -526,7 +546,7 @@ export class MafiaHandler {
       return;
     }
     if (this.checkWin(room)) return;
-    if (m.phase === 'night' && this.nightDone(room, m)) this.endNight(room);
+    if (m.phase === 'night') this.maybeEndNight(room);
     else if (m.phase === 'day') {
       this.ctx.broadcastToRoom(room.name, 'mafiaVoteUpdate', {
         roomName: room.name,

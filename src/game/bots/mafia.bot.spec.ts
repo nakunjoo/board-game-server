@@ -22,6 +22,8 @@ describe('마피아 봇', () => {
   let over: Record<string, unknown> | null;
   let calls: LlmRequest[];
   let chats: { id: string; text: string; scope: string }[];
+  let dayLengths: number[];
+  let dayStart: number;
 
   beforeEach(() => {
     jest.useFakeTimers();
@@ -42,6 +44,8 @@ describe('마피아 봇', () => {
     over = null;
     calls = [];
     chats = [];
+    dayLengths = [];
+    dayStart = 0;
   });
 
   afterEach(() => {
@@ -62,6 +66,8 @@ describe('마피아 봇', () => {
       const data = d as Record<string, unknown>;
       if (e === 'error') errs.push(String(data.message));
       if (e === 'mafiaGameOver') over = data;
+      if (e === 'mafiaDay') dayStart = Date.now();
+      if (e === 'mafiaExecuted') dayLengths.push(Date.now() - dayStart);
       if (e === 'mafiaChat')
         chats.push({
           id: String(data.playerId),
@@ -176,5 +182,33 @@ describe('마피아 봇', () => {
     }
     expect(wins.mafia).toBeGreaterThan(0);
     expect(wins.citizens).toBeGreaterThan(0);
+  });
+
+  it('봇 투표 때문에 낮이 일찍 끝나지 않는다 (토론 시간의 60% 이상)', async () => {
+    const { room, host } = setup(6, () => Promise.resolve(null));
+    await play(room, host as never);
+    expect(dayLengths.length).toBeGreaterThan(0);
+    for (const ms of dayLengths)
+      expect(ms).toBeGreaterThanOrEqual(90_000 * 0.6);
+  });
+
+  it('LLM 없이도 봇끼리 같은 말을 되풀이하지 않는다', async () => {
+    const { room, host } = setup(6, () => Promise.resolve(null));
+    await play(room, host as never);
+    const said = chats.filter((c) => c.scope === 'all').map((c) => c.text);
+    expect(said.length).toBeGreaterThan(5);
+    const first = said.slice(0, 15);
+    expect(new Set(first).size).toBe(first.length);
+  });
+
+  it('LLM이 같은 말을 내놓으면 버리고 다른 말을 한다', async () => {
+    const { room, host } = setup(6, (req) =>
+      Promise.resolve(req.user.includes('내 채팅:') ? '누가 마피아일까' : null),
+    );
+    await play(room, host as never);
+    const said = chats.filter((c) => c.scope === 'all').map((c) => c.text);
+    // 최근 40마디 안에서는 한 번만 (아주 오래전에 한 말은 다시 나올 수 있다)
+    const recent = said.slice(0, 40);
+    expect(recent.filter((t) => t === '누가 마피아일까').length).toBe(1);
   });
 });

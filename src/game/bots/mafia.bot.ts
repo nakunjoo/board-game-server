@@ -3,6 +3,7 @@ import { MafiaRole } from '../game.types';
 import { MafiaHandler } from '../games/mafia/mafia.handler';
 import { BotSelf, BotBrain, botScheduler } from './bot.brain';
 import { LlmCall } from './llm';
+import { freshPick, isRepeat, NO_REPEAT_RULE, rememberLine } from './bot.chat';
 
 const pick = <T>(a: T[]): T | undefined =>
   a[Math.floor(Math.random() * a.length)];
@@ -14,18 +15,36 @@ const ROLE_NAME: Record<MafiaRole, string> = {
   citizen: '시민',
 };
 
+/** LLM이 없거나 늦을 때. {name}은 살아 있는 다른 사람 이름으로 바뀐다 */
 const FALLBACK_CHAT = [
   '누가 수상하지?',
   '어젯밤 누가 그랬을까',
-  '나는 시민이야',
   '다들 의견 좀 말해 봐',
-  '흠…',
+  '{name} 너무 조용한데',
+  '{name} 넌 어떻게 생각해?',
+  '아직 감이 안 와',
+  '경찰 있으면 말 좀 해 줘',
+  '말 없는 사람이 제일 수상해',
+  '{name} 아까부터 좀 이상했어',
+  '오늘은 아무나 찍지 말자',
+  '표 갈리면 아무도 안 죽어',
+  '어제 투표한 거 보면 보일 것 같은데',
+  '{name} 쪽으로 의심 가',
+  '난 아직 모르겠다',
+  '시간 얼마 안 남았어',
+  '다들 누구 찍을 거야?',
+  '{name}는 왜 말이 없어',
+  '흠 다들 너무 침착한데',
 ];
 const FALLBACK_DEFEND = [
   '나 아니야',
   '나 시민이야 진짜',
   '왜 나를 의심해?',
   '난 아무것도 안 했어',
+  '나 찍으면 시민 하나 버리는 거야',
+  '근거가 뭔데',
+  '갑자기 나? 너가 더 수상해',
+  '나 진짜 억울하다',
 ];
 
 const RULES = [
@@ -70,6 +89,8 @@ export function createMafiaBot(
   const roomName = self.roomName;
   const chatLog: { name: string; text: string }[] = [];
   let defendedDay = -1;
+  let dayStartedAt = 0;
+  let dayMs = 90000;
   /** 마피아 봇이 기억하는 '나(우리)를 의심한 사람' */
   const accusers = new Set<string>();
 
@@ -142,24 +163,36 @@ export function createMafiaBot(
   };
 
   // ── 낮 ──
-  const say = async (kind: 'chat' | 'defend') => {
+  /** 오늘 낮에 한 말 수와 마지막으로 말한 때 (도배 방지) */
+  let spokenDay = -1;
+  let spokenCount = 0;
+  let lastSpokeAt = 0;
+  const MAX_LINES_PER_DAY = 4;
+  const canSpeak = (day: number) =>
+    !(spokenDay === day && spokenCount >= MAX_LINES_PER_DAY) &&
+    Date.now() - lastSpokeAt > 6000;
+
+  const say = async (kind: 'chat' | 'defend' | 'reply') => {
     const v = view();
     if (!v || !v.me || v.m.phase !== 'day') return;
     const { m, role, team, name, findings, alive } = v;
+    if (kind !== 'defend' && !canSpeak(m.day)) return;
     const myName = name(self.id);
     const answer = await llm({
       system: `${RULES}\n너의 이름은 "${myName}"이다. 너 자신을 3인칭으로 부르거나 의심하지 말 것.\n${roleGuide(role, team.map(name), findings)}\n지금은 낮 토론이다. 친구들끼리 채팅하듯 짧게 반말로 한 마디 해라.${
         kind === 'defend'
           ? ' 방금 누가 너를 의심했다. 자연스럽게 해명해라.'
-          : ''
-      }\n출력: 채팅 한 줄만. 30자 이내. 따옴표·이모지 없이.`,
+          : kind === 'reply'
+            ? ' 방금 나온 말에 이어서 대답하거나 반응해라.'
+            : ''
+      }\n${NO_REPEAT_RULE}\n출력: 채팅 한 줄만. 30자 이내. 따옴표·이모지 없이.`,
       user: `${m.day}일째 낮\n어젯밤: ${
         m.lastNight?.killedId
           ? `${name(m.lastNight.killedId)} 죽음`
           : '아무도 안 죽음'
       }\n살아 있는 사람: ${alive.map(name).join(', ')}\n최근 채팅:\n${
         chatLog
-          .slice(-10)
+          .slice(-12)
           .map((c) => `- ${c.name}: ${c.text}`)
           .join('\n') || '(없음)'
       }\n\n내 채팅:`,
@@ -174,12 +207,29 @@ export function createMafiaBot(
       role === 'police'
         ? m.policeLog.find((l) => l.isMafia && alive.includes(l.targetId))
         : undefined;
-    const fallback = found
-      ? `나 경찰인데 ${name(found.targetId)} 마피아야`
-      : (pick(kind === 'defend' ? FALLBACK_DEFEND : FALLBACK_CHAT) ?? '흠…');
-    const text = line && !leaks ? line : fallback;
-    if (room()?.mafia?.phase === 'day')
-      mafia.handleText({ roomName, text }, sock);
+    const claim = found ? `나 경찰인데 ${name(found.targetId)} 마피아야` : null;
+    const others = alive.filter(
+      (id) => id !== self.id && !(role === 'mafia' && team.includes(id)),
+    );
+    const fallback = () =>
+      claim && !isRepeat(roomName, claim)
+        ? claim
+        : freshPick(
+            roomName,
+            kind === 'defend' ? FALLBACK_DEFEND : FALLBACK_CHAT,
+          ).replace('{name}', name(pick(others) ?? self.id));
+    const text =
+      line && !leaks && !isRepeat(roomName, line) ? line : fallback();
+    const now = room()?.mafia;
+    if (now?.phase !== 'day' || !now.alive.has(self.id)) return;
+    if (spokenDay !== now.day) {
+      spokenDay = now.day;
+      spokenCount = 0;
+    }
+    spokenCount++;
+    lastSpokeAt = Date.now();
+    rememberLine(roomName, text);
+    mafia.handleText({ roomName, text }, sock);
   };
 
   const vote = async () => {
@@ -270,28 +320,35 @@ export function createMafiaBot(
         const policeFound =
           m.roles.get(self.id) === 'police' &&
           m.policeLog.some((l) => l.isMafia && m.alive.has(l.targetId));
-        if (policeFound)
-          later(
-            'chat',
-            run(() => say('chat')),
-            3000 + Math.random() * 4000,
-          );
-        else if (Math.random() < 0.7)
-          later(
-            'chat',
-            run(() => say('chat')),
-            4000 + Math.random() * 12000,
-          );
         const ms = Number(d.timeLimitMs ?? 90000);
-        later('vote', run(vote), ms * (0.35 + Math.random() * 0.3));
+        dayStartedAt = Date.now();
+        dayMs = ms;
+        // 낮 동안 두세 번 나눠서 말한다 (한 번만 말하고 조용하면 사람 혼자 떠드는 꼴이었다)
+        const lines = policeFound ? 3 : 2 + (Math.random() < 0.5 ? 1 : 0);
+        for (let i = 0; i < lines; i++) {
+          const from = policeFound && i === 0 ? 0.03 : 0.05 + (i * 0.6) / lines;
+          later(
+            `chat${i}`,
+            run(() => say('chat')),
+            ms * (from + Math.random() * (0.6 / lines)),
+            true,
+          );
+        }
+        // 투표는 토론 끝 무렵에 (예전엔 35~65%에 찍어서, 사람이 투표하면 낮이 반쯤에서 끝났다)
+        later('vote', run(vote), ms * (0.72 + Math.random() * 0.18), true);
         break;
       }
       case 'mafiaChat': {
         const text = typeof d.text === 'string' ? d.text : '';
         const nick = typeof d.nickname === 'string' ? d.nickname : '';
         const pid = typeof d.playerId === 'string' ? d.playerId : '';
-        if (!text || pid === self.id || d.scope !== 'all') break;
+        if (!text || d.scope !== 'all') break;
+        if (pid === self.id) {
+          chatLog.push({ name: `${nick}(나)`, text });
+          break;
+        }
         chatLog.push({ name: nick, text });
+        rememberLine(roomName, text);
         if (!m || !m.alive.has(self.id)) break;
         const myName = m.nicknames.get(self.id) ?? '';
         const role = m.roles.get(self.id);
@@ -314,6 +371,17 @@ export function createMafiaBot(
             run(() => say('defend')),
             2000 + Math.random() * 3000,
           );
+        } else if (
+          m.phase === 'day' &&
+          !pid.startsWith('bot:') &&
+          Math.random() < 0.45
+        ) {
+          // 사람이 말하면 봇 몇이 받아 준다 (각 봇 45%, canSpeak로 도배 방지)
+          later(
+            'reply',
+            run(() => say('reply')),
+            2500 + Math.random() * 4000,
+          );
         }
         break;
       }
@@ -333,7 +401,16 @@ export function createMafiaBot(
             !id.startsWith('bot:') && [...r.playerIds.values()].includes(id),
         );
         if (humans.length > 0 && humans.every((id) => m.votes.has(id)))
-          later('vote', run(vote), 1500 + Math.random() * 2500, true);
+          // 사람이 다 찍었어도 낮이 시작하자마자 끝나지 않게 최소 40%는 지난 뒤에
+          later(
+            'vote',
+            run(vote),
+            Math.max(
+              1500 + Math.random() * 2500,
+              dayStartedAt + dayMs * 0.4 - Date.now(),
+            ),
+            true,
+          );
         break;
       }
     }

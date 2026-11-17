@@ -3,6 +3,7 @@ import { LiarHandler } from '../games/liar/liar.handler';
 import { LIAR_TOPICS } from '../games/liar/liar.words';
 import { BotSelf, BotBrain, botScheduler } from './bot.brain';
 import { LlmCall } from './llm';
+import { freshPick, isRepeat, NO_REPEAT_RULE, rememberLine } from './bot.chat';
 
 /** 서버 liar.handler.ts와 같은 비교 (자기 단어가 든 말은 서버가 막으므로 미리 거른다) */
 const normalize = (s: string) =>
@@ -18,19 +19,38 @@ const FALLBACK_DESC = [
   '생각보다 자주 접해요',
   '사람마다 취향이 갈려요',
   '어릴 때부터 알던 거예요',
+  '이름만 들어도 바로 알아요',
+  '계절 타는 편이에요',
+  '가격이 천차만별이에요',
+  '혼자보다 같이가 좋아요',
+  '요즘 더 자주 보여요',
+  '처음 보면 신기해요',
 ];
+/** {name}은 다른 참가자 이름으로 바뀐다 */
 const FALLBACK_CHAT = [
   '흠 다들 비슷한데',
   '누가 좀 애매했어',
-  '나는 아니야',
   '설명 하나가 좀 수상해',
-  '음…',
+  '{name} 설명 좀 애매하지 않아?',
+  '{name} 너무 두루뭉술했어',
+  '{name}는 확실히 알고 말한 듯',
+  '난 {name} 쪽이 좀 걸려',
+  '다들 누구 찍을 거야?',
+  '두 번째 바퀴에서 갈릴 줄 알았는데',
+  '아직 확신은 없어',
+  '말 제일 짧았던 사람 누구지',
+  '{name} 한 번 더 설명해 봐',
+  '표 갈리면 라이어 좋은 일이야',
+  '거의 다 같은 얘기 했는데',
 ];
 const FALLBACK_DEFEND = [
   '나 아니야 진짜',
   '내 설명 괜찮았잖아',
   '왜 나야?',
   '난 맞게 설명했어',
+  '나 찍으면 라이어 좋은 일 시키는 거야',
+  '내 설명 다시 봐 봐',
+  '너무 쉬우면 라이어가 맞히잖아',
 ];
 
 const RULES = [
@@ -81,6 +101,8 @@ export function createLiarBot(
   /** 이번 판에 이미 변명했는지 (판마다 한 번만 — 비용과 도배 방지) */
   let defended = -1;
   const chatLog: { name: string; text: string }[] = [];
+  let discussStartedAt = 0;
+  let discussMs = 90000;
 
   /** 지금 판에서 봇이 아는 것 */
   const view = () => {
@@ -115,38 +137,74 @@ export function createLiarBot(
       user: `주제: ${s.topic}\n내 제시어: ${myWord}\n${lap}바퀴째\n지금까지 나온 설명:\n${descs.join('\n') || '(아직 없음)'}\n\n내 설명:`,
       timeoutMs: 12000,
     });
-    const text = safe(answer, myWord, DESC_MAX) ?? pick(FALLBACK_DESC);
+    const llmLine = safe(answer, myWord, DESC_MAX);
+    const text =
+      llmLine && !isRepeat(roomName, llmLine)
+        ? llmLine
+        : freshPick(roomName, FALLBACK_DESC);
     // LLM을 기다리는 동안 차례가 넘어갔으면(시간 초과·나감) 보내지 않는다
     const now = room()?.liar;
     if (!now || now !== s || now.phase !== 'describe') return;
     if (now.speakOrder[now.speakIndex % now.speakOrder.length] !== self.id)
       return;
+    rememberLine(roomName, text);
     liar.handleText({ roomName, text }, sock);
   };
 
-  const say = async (kind: 'chat' | 'defend') => {
+  /** 이번 판에 한 말 수와 마지막으로 말한 때 (도배 방지) */
+  let spokenRound = -1;
+  let spokenCount = 0;
+  let lastSpokeAt = 0;
+  const MAX_LINES_PER_ROUND = 3;
+
+  const say = async (kind: 'chat' | 'defend' | 'reply') => {
     const v = view();
     if (!v || v.s.phase !== 'discuss') return;
-    const { s, myWord, myName, descs } = v;
+    const { r, s, myWord, myName, descs } = v;
+    if (
+      kind !== 'defend' &&
+      ((spokenRound === s.round && spokenCount >= MAX_LINES_PER_ROUND) ||
+        Date.now() - lastSpokeAt < 6000)
+    )
+      return;
     const answer = await llm({
       // 실제로 돌려 보니 봇 이름(🤖봇2)의 이모지 때문에 "봇2 좀 이상한데"처럼 자기를 의심했다 → 이름을 못 박아 둔다
       system: `${RULES}\n너의 이름은 "${myName}"이다. 설명 목록에서 "(나)"가 붙은 줄이 네 설명이다. 너 자신을 의심하거나 3인칭으로 부르지 말 것.\n지금은 토론 시간이다. 친구들끼리 채팅하듯 짧게 반말로 한 마디 해라.${
         kind === 'defend'
           ? ' 방금 누가 너를 의심했다. 너무 방어적이지 않게 해명해라.'
-          : ' 수상한 사람이 있으면 다른 사람 이름을 짚어도 좋다.'
-      }\n출력: 채팅 한 줄만. 25자 이내. 네 제시어나 그 글자를 쓰지 말 것.`,
+          : kind === 'reply'
+            ? ' 방금 나온 말에 이어서 대답하거나 반응해라.'
+            : ' 수상한 사람이 있으면 다른 사람 이름을 짚어도 좋다.'
+      }\n${NO_REPEAT_RULE}\n출력: 채팅 한 줄만. 25자 이내. 네 제시어나 그 글자를 쓰지 말 것.`,
       user: `주제: ${s.topic}\n내 이름: ${myName}\n내 제시어: ${myWord}\n설명:\n${descs.join('\n')}\n최근 채팅:\n${
         chatLog
-          .slice(-8)
+          .slice(-10)
           .map((c) => `- ${c.name}: ${c.text}`)
           .join('\n') || '(없음)'
       }\n\n내 채팅:`,
     });
+    const line = safe(answer, myWord, 60);
+    const inRoom = new Set(r.playerIds.values());
+    const others = s.speakOrder.filter(
+      (id) => id !== self.id && inRoom.has(id),
+    );
     const text =
-      safe(answer, myWord, 60) ??
-      pick(kind === 'defend' ? FALLBACK_DEFEND : FALLBACK_CHAT);
-    if (room()?.liar?.phase === 'discuss')
-      liar.handleText({ roomName, text }, sock);
+      line && !isRepeat(roomName, line)
+        ? line
+        : freshPick(
+            roomName,
+            kind === 'defend' ? FALLBACK_DEFEND : FALLBACK_CHAT,
+          ).replace('{name}', s.nicknames.get(pick(others) ?? self.id) ?? '');
+    const now = room()?.liar;
+    if (now?.phase !== 'discuss') return;
+    if (spokenRound !== now.round) {
+      spokenRound = now.round;
+      spokenCount = 0;
+    }
+    spokenCount++;
+    lastSpokeAt = Date.now();
+    rememberLine(roomName, text);
+    liar.handleText({ roomName, text }, sock);
   };
 
   const vote = async () => {
@@ -206,22 +264,33 @@ export function createLiarBot(
         if (d.speakerId === self.id)
           later('describe', run(describe), 1500 + Math.random() * 2000);
         break;
-      case 'liarDiscuss':
-        // 토론 때 한 마디는 봇마다 60% 확률로 한 번 (판마다)
-        if (s && Math.random() < 0.6)
+      case 'liarDiscuss': {
+        const ms = Number(d.timeLimitMs ?? 90000);
+        discussStartedAt = Date.now();
+        discussMs = ms;
+        // 토론 동안 한두 번 나눠서 말한다
+        const lines = Math.random() < 0.5 ? 2 : 1;
+        for (let i = 0; i < lines; i++)
           later(
-            'chat',
+            `chat${i}`,
             run(() => say('chat')),
-            3000 + Math.random() * 9000,
+            ms * (0.04 + (i * 0.5) / lines + Math.random() * (0.4 / lines)),
+            true,
           );
-        // 사람들이 이야기할 시간을 두고 투표
-        later('vote', run(vote), 12000 + Math.random() * 18000);
+        // 투표는 토론 끝 무렵에 (예전엔 12~30초에 찍어서 사람이 투표하면 토론이 금방 끝났다)
+        later('vote', run(vote), ms * (0.7 + Math.random() * 0.2), true);
         break;
+      }
       case 'liarChat': {
         const name = typeof d.nickname === 'string' ? d.nickname : '';
         const text = typeof d.text === 'string' ? d.text : '';
-        if (d.playerId === self.id || !text) break;
+        if (!text) break;
+        if (d.playerId === self.id) {
+          chatLog.push({ name: `${name}(나)`, text });
+          break;
+        }
         chatLog.push({ name, text });
+        rememberLine(roomName, text);
         const myName = s?.nicknames.get(self.id);
         // 누가 나를 콕 집으면 판마다 한 번 해명
         if (
@@ -237,6 +306,18 @@ export function createLiarBot(
             run(() => say('defend')),
             2000 + Math.random() * 3000,
           );
+        } else if (
+          s?.phase === 'discuss' &&
+          typeof d.playerId === 'string' &&
+          !d.playerId.startsWith('bot:') &&
+          Math.random() < 0.4
+        ) {
+          // 사람이 말하면 봇 몇이 받아 준다
+          later(
+            'reply',
+            run(() => say('reply')),
+            2500 + Math.random() * 4000,
+          );
         }
         break;
       }
@@ -249,7 +330,16 @@ export function createLiarBot(
             !id.startsWith('bot:') && [...r.playerIds.values()].includes(id),
         );
         if (humans.length > 0 && humans.every((id) => s.votes.has(id)))
-          later('vote', run(vote), 1500 + Math.random() * 2500, true);
+          // 사람이 다 찍었어도 토론이 시작하자마자 끝나지 않게 최소 40%는 지난 뒤에
+          later(
+            'vote',
+            run(vote),
+            Math.max(
+              1500 + Math.random() * 2500,
+              discussStartedAt + discussMs * 0.4 - Date.now(),
+            ),
+            true,
+          );
         break;
       }
       case 'liarGuessTime':

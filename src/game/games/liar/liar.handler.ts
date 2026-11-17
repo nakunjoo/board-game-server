@@ -43,11 +43,11 @@ export class LiarHandler {
   static readonly MIN_PLAYERS = 3;
   static readonly MAX_PLAYERS = 8;
   /** 제시어를 확인하는 시간 */
-  static readonly WORD_TIME_MS = 6_000;
+  static readonly WORD_TIME_MS = 8_000; // 새 판 시작 팝업을 읽을 시간
   /** 한 사람이 설명하는 시간 */
   static readonly DESC_TIME_MS = 30_000;
   static readonly LIAR_GUESS_TIME_MS = 20_000;
-  static readonly RESULT_TIME_MS = 8_000;
+  static readonly RESULT_TIME_MS = 12_000; // 결과 팝업을 읽을 시간
   static readonly LIAR_WIN_POINTS = 3;
   static readonly CITIZEN_WIN_POINTS = 1;
   static readonly MAX_DESC_LENGTH = 40;

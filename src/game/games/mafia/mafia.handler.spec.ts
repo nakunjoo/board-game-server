@@ -52,6 +52,8 @@ describe('MafiaHandler', () => {
     if (police) act(police, ids.find((x) => x !== police && m().alive.has(x))!);
     const doctor = withRole('doctor').find((x) => m().alive.has(x));
     if (doctor) act(doctor, heal ?? doctor);
+    // 할 일이 끝나도 밤은 최소 시간만큼 간다
+    jest.advanceTimersByTime(MafiaHandler.MIN_NIGHT_MS);
   };
   /** 낮: 산 사람 모두 target에게 (target 본인은 다른 사람에게) */
   const dayVote = (target: string) => {
@@ -374,6 +376,21 @@ describe('MafiaHandler', () => {
       expect(m().alive.has(c1)).toBe(false);
       night(c2);
       expect(m().phase).toBe('day');
+    });
+  });
+
+  describe('밤 최소 시간', () => {
+    it('할 일이 몇 초 만에 끝나도 최소 시간이 지나야 낮이 된다', async () => {
+      await setup(6);
+      const victim = withRole('citizen')[0];
+      for (const id of withRole('mafia')) act(id, victim);
+      act(withRole('police')[0], victim);
+      act(withRole('doctor')[0], withRole('doctor')[0]);
+      jest.advanceTimersByTime(MafiaHandler.MIN_NIGHT_MS - 1000);
+      expect(m().phase).toBe('night');
+      jest.advanceTimersByTime(1000);
+      expect(m().phase).toBe('day');
+      expect(m().alive.has(victim)).toBe(false);
     });
   });
 });

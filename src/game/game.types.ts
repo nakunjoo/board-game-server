@@ -240,6 +240,7 @@ export interface MafiaState {
   kills: Map<string, string>; // 마피아 → 죽이려는 사람
   investigated: string | null; // 이번 밤 경찰이 조사한 사람
   healed: string | null;
+  nightStartedAt?: number; // 밤 최소 시간(MIN_NIGHT_MS) 계산용
   policeLog: { targetId: string; isMafia: boolean; day: number }[]; // 경찰만 본다
   // 낮
   votes: Map<string, string>;
