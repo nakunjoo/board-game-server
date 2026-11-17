@@ -6,6 +6,7 @@ import { SkulkingHandler } from '../games/skulking/skulking.handler';
 import { LiarHandler } from '../games/liar/liar.handler';
 import { Room } from '../game.types';
 import { BotService } from './bot.service';
+import { MafiaHandler } from '../games/mafia/mafia.handler';
 import { BotBrain } from './bot.brain';
 import { createBotSocket, isBotId } from './bot.util';
 import { createLiarBot } from './liar.bot';
@@ -38,6 +39,7 @@ describe('라이어 봇', () => {
       new SpiceHandler(ctx, f, fakeDb()),
       new SkulkingHandler(ctx, f, fakeDb()),
       liar,
+      new MafiaHandler(ctx, fakeDb()),
     );
     errs = [];
     blocked = 0;

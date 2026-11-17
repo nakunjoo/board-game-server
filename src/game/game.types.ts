@@ -217,6 +217,38 @@ export interface LiarState {
   lastResult: LiarRoundResult | null;
 }
 
+export type MafiaRole = 'mafia' | 'police' | 'doctor' | 'citizen';
+
+export interface MafiaGameOver {
+  winner: 'mafia' | 'citizens' | 'none'; // none: 인원 부족으로 끝남
+  roles: Record<string, MafiaRole>;
+  nicknames: Record<string, string>;
+  alive: string[];
+  day: number;
+}
+
+/** 마피아 진행 상태 (게임 중에만 있음) */
+export interface MafiaState {
+  discussTimeSec: number;
+  minPlayers: number; // 이보다 적게 남으면 끝낸다 (관리자가 혼자 시험할 때는 1)
+  day: number; // 1일째부터. 밤 → 낮이 하루
+  phase: 'role' | 'night' | 'day';
+  roles: Map<string, MafiaRole>;
+  alive: Set<string>;
+  nicknames: Map<string, string>; // 나간 사람도 결과에 이름이 남게
+  // 밤
+  kills: Map<string, string>; // 마피아 → 죽이려는 사람
+  investigated: string | null; // 이번 밤 경찰이 조사한 사람
+  healed: string | null;
+  policeLog: { targetId: string; isMafia: boolean; day: number }[]; // 경찰만 본다
+  // 낮
+  votes: Map<string, string>;
+  lastNight: { killedId: string | null; day: number } | null;
+  lastExecution: { executedId: string | null; day: number; tally: Record<string, number> } | null;
+  phaseEndsAt: number;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 export interface PlayerResult {
   nickname: string;
   chips: number[];
@@ -262,6 +294,8 @@ export interface Room {
     reason: 'finished' | 'notEnough';
     ranking: { playerId: string; nickname: string; score: number; rank: number }[];
   };
+  mafia?: MafiaState;
+  mafiaGameOverResult?: MafiaGameOver;
   drawing?: DrawingState;
   drawingGameOverResult?: {
     reason: 'finished' | 'notEnough';

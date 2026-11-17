@@ -10,6 +10,7 @@ DB 스키마, RLS 정책, 트리거 SQL → [SUPABASE_SCHEMA.md](../SUPABASE_SCH
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-11-16 | **마피아(`mafia`) 추가** — `games/mafia/mafia.handler.ts`·`mafia.handler.spec.ts`, 마피아 봇 `bots/mafia.bot.ts`·`mafia.bot.spec.ts`. 4~8명. 게이트웨이: `mafiaStart`/`mafiaText`/`mafiaAction` 등록, `MAX_PLAYERS` 8, `NO_DECK_GAMES`에 추가, 끊김/재접속/이탈 연결, `roomJoined`에 `buildMafiaState`. `game.types.ts`에 `MafiaRole`/`MafiaState`/`MafiaGameOver`, `Room.mafia`/`mafiaGameOverResult`. 아래 "마피아" 참조. DB `game_type`에 `'mafia'` 추가 필요(SUPABASE_SCHEMA.md) |
 | 2026-11-16 | **라이어 봇 (LLM)** — `bots/liar.bot.ts`, `bots/llm.ts`(OpenAI fetch, 키 없거나 실패하면 미리 써 둔 문장). `BotService`에 `LiarHandler` 주입·`SUPPORTED_GAMES`에 `liar`. 아래 "봇" 참조. VM `~/.env.production`에 `OPENAI_API_KEY` 필요 |
 | 2026-11-16 | **봇 플레이어 추가 (갱스터·스컬킹·향신료)** — `game/bots/`. 아래 "봇" 섹션 참조. `GameContext`: 사람이 모두 나가면 봇도 빼고 방을 닫음, 방장 위임에서 봇 제외. `DatabaseService`: 봇 id(`bot:`)는 `isAdmin`·`insertPlayerResults`·`finalizePlayerResult`·`markAbandoned`에서 건너뜀 (섞이면 한 묶음 전체가 실패해 사람 기록까지 사라짐). `GangHandler.evaluateHand`, `SkulkingHandler.determineTrickWinner`/`getEffectiveType`/`isNumberSuit`를 public으로(봇이 같은 판정을 씀) |
 | 2026-11-16 | **라이어(`liar`) 추가** — `games/liar/liar.handler.ts`·`liar.words.ts`(주제 15개, 비슷한 단어 3~4개짜리 묶음 110여 개)·`liar.handler.spec.ts`. 3~8명. 게이트웨이: `liarStart`/`liarText`/`liarVote` 등록, 덱 없는 게임 목록(`NO_DECK_GAMES`)에 추가, 끊김/재접속/이탈 연결, `roomJoined`에 `buildLiarState`. `game.types.ts`에 `LiarState`/`LiarRoundResult`, `Room.liar`/`liarGameOverResult`. DB `game_type`에 `'liar'` 추가 필요(SUPABASE_SCHEMA.md) |
@@ -331,7 +332,7 @@ src/
 
 ## 봇 (`game/bots/`)
 
-사람이 모자랄 때 빈자리를 채우거나 혼자 연습하려고 방장이 대기 중인 방에 넣는 플레이어. 지금은 **갱스터·스컬킹·향신료·라이어**(`BotService.SUPPORTED_GAMES`).
+사람이 모자랄 때 빈자리를 채우거나 혼자 연습하려고 방장이 대기 중인 방에 넣는 플레이어. 지금은 **갱스터·스컬킹·향신료·라이어·마피아**(`BotService.SUPPORTED_GAMES`).
 
 **구조:** 봇은 서버 안의 가짜 소켓(`bot.util.ts` `createBotSocket`). 방의 `clients`·`playerIds`·`nicknames`·`playerOrder`·`hands`에 사람과 똑같이 들어가므로 게임 핸들러는 봇을 모른다. 서버가 그 소켓으로 보낸 이벤트를 다음 틱에 두뇌(`gang.bot.ts`·`skulking.bot.ts`·`spice.bot.ts`)가 받아, 잠깐 생각한 뒤(1~2초) 핸들러 메서드를 사람처럼 부른다. **동기로 되부르면 안 된다** — 핸들러가 브로드캐스트하는 도중이라 차례·타이머가 꼬인다. `bot.brain.ts`의 `botScheduler`가 같은 이름의 할 일은 하나만 걸고, 실행할 때 봇이 아직 방에 있는지 다시 본다. 봇은 사람과 같은 정보만 쓴다(자기 손패·공개 정보. 서버 상태에서 읽되 남의 손패는 보지 않는다).
 - id `bot:…`, 닉네임 `🤖봇1~8`. 전적(DB)에 넣지 않는다. 방장이 되지 않는다. 사람이 모두 나가면 봇도 빠지고 방이 닫힌다
@@ -344,6 +345,8 @@ src/
 - 스컬킹: 선뽑기는 바로. 비드는 카드별 이길 확률의 합(사람이 많을수록 낮춤). 카드는 리드 수트 규칙 안에서, 비드를 못 채웠으면 지금 이기는 가장 약한 카드, 채웠으면 지는 카드 중 가장 센 카드(`determineTrickWinner`로 미리 따져 봄). Tigress는 이기고 싶으면 해적. 측정: 비드 적중 약 59%
 - 향신료: 참말로 낼 수 있으면 가장 작은 숫자 → 없으면 와일드(70%) → 거짓말(30%, 마지막 한 장이면 항상) → 패스. 도전은 봇 한 명당 낮은 확률(기본 3%)에, 선언 카드를 2장 이상 들고 있으면(+45%)·상대가 마지막 한 장을 냈으면(+35%) 크게 올린다. 처음엔 기본 10%였는데 낸 카드의 37%가 도전받아 아무도 트로피를 못 땄다. 지금은 약 19%, 20게임 중 16게임이 트로피로 끝남
 - 라이어(`liar.bot.ts`, LLM): 봇도 사람처럼 주제·내 단어·지금까지의 설명/채팅만 보고 말한다(누가 라이어인지, 다른 단어는 보지 않는다 — 그래서 봇도 자기가 라이어인 줄 모른다). 설명 차례에 LLM으로 한 줄(앞 설명과 안 맞으면 두루뭉술하게), 토론 때 60% 확률로 한 마디·누가 자기 이름을 집으면 판마다 한 번 해명, 12~30초 뒤(사람이 모두 투표했으면 곧) LLM이 고른 사람에게 투표, 지목되면 남들 설명으로 제시어 맞히기. 답은 첫 줄만 쓰고 따옴표·번호를 떼며, **자기 단어가 들어가면 버리고** 미리 써 둔 문장으로 대신한다. LLM을 기다리는 동안 차례가 지나갔으면 보내지 않는다. 실제 gpt-5-mini로 봇 5명 판을 돌려 다듬었다: 처음엔 설명이 "붉은빛 털과 긴 꼬리의 포식자"처럼 길어 정답이 다 보였음 → 특징 하나·10~20자(24자에서 단어 사이로 자름). 라이어 답이 "게(또는 크랩)"로 와서 단어 하나만 남김. 봇이 이모지 이름 때문에 "봇2 좀 이상한데"처럼 자기를 의심해서 "너의 이름은 …, (나)가 네 설명"을 못 박음. 응답은 보통 1.2~1.4초(최대 3초), 실패 0. 알려진 한계: 동의어(어묵↔오뎅)는 서버가 정답으로 치지 않는다(사람도 같음)
+
+- 마피아(`mafia.bot.ts`, 밤은 규칙·낮은 LLM): 봇은 자기 역할과 사람이 아는 것만 쓴다(마피아는 동료, 경찰은 자기 조사 결과 — 남의 역할은 LLM에도 넘기지 않는다). 밤: 마피아는 동료가 이미 골랐으면 따라가며 맞장구, 아니면 자기를 의심한 사람·아무나를 고르고 `○○ 어때`(마피아끼리, `whisper: true`). 경찰은 아직 조사 안 한 사람, 의사는 35% 자기 자신·나머지는 아무나. 낮: 70% 확률로 LLM 한 마디(경찰이 살아 있는 마피아를 찾았으면 일찍, LLM이 없으면 `나 경찰인데 ○○ 마피아야`), 이름이 불리면 하루 한 번 해명, 마피아 봇의 답에 "나 마피아"가 들어가면 버림. 투표는 경찰이면 찾은 마피아, 아니면 LLM(없으면 시민은 채팅에서 '마피아'로 가장 많이 지목된 사람, 마피아는 자기를 의심한 사람). 측정(LLM 없이 60판): 마피아 승률 4명 48%, 6명 70%, 8명 72%
 
 **LLM (`bots/llm.ts`):** tarot-saju처럼 OpenAI Chat Completions를 SDK 없이 fetch. 환경 변수(VM `~/.env.production`): `OPENAI_API_KEY`(없으면 호출하지 않고 미리 써 둔 문장), `BOT_LLM_MODEL`(기본 `gpt-5-mini`, `reasoning_effort: minimal`), `BOT_LLM_DAILY_LIMIT`(하루 호출 한도, 기본 3000 — 넘으면 미리 써 둔 문장). 시간 제한 8초(설명·정답은 12초), 실패·시간 초과는 모두 null. 봇 한 명이 한 판에 3번쯤 부른다(설명·채팅·투표). 테스트에서는 `BotService.llm`을 가짜로 바꾼다
 
@@ -378,6 +381,40 @@ src/
 | `liarGameOver` | 종료 (reason: finished·notEnough, ranking) |
 
 **재연결:** `roomJoined`의 `liar`(진행 상태, 내 단어 — 남의 단어는 보내지 않는다, 설명 기록, 투표한 사람·내 투표, 결과, `timeLeftMs`) 또는 `liarGameOver`.
+
+## 마피아 (`mafia.handler.ts`)
+
+4~8명(관리자는 우회, 그때 `minPlayers` 1). 방장이 `mafiaStart`로 낮 토론 시간(90/120/180초)을 정한다. 역할: 마피아(4~5명 1, 6~8명 2), 경찰 1, 의사 1, 나머지 시민. **역할은 죽어도 공개하지 않고** 게임이 끝날 때 모두 공개.
+
+**진행:** `role`(6초, 개인마다 `mafiaRole` — 마피아만 동료를 안다) → `night`(30초) → `day`(토론 시간) → 처형 결과 5초 → 다음 밤(`day`+1) … 승부가 날 때까지.
+- 밤(`mafiaAction`): 마피아는 동료 아닌 산 사람을 지목(바꿀 수 있음, 여럿이면 가장 많이 고른 사람·같으면 먼저 고른 사람), 경찰은 하룻밤 한 명 조사(자기 제외, 결과 `mafiaInvestigated`는 경찰에게만 바로), 의사는 한 명 살리기(자기 자신도 언제나, 바꿀 수 있음). 접속 중인 산 마피아·경찰·의사가 할 일을 다 하면 시간 전에 끝난다
+- 낮: 밤 결과(`mafiaDay`의 killedId) 발표 후 산 사람끼리 채팅·투표(`mafiaAction` targetId, null이면 취소, 자기 자신 불가). 접속 중인 산 사람이 모두 투표하면 바로 마감. 최다 득표 **한 명**만 처형, 동점·무투표면 없음
+- 승리: 산 마피아 0 → 시민(경찰·의사 포함). 산 마피아 ≥ 나머지 → 마피아. 6명(마피아 2)이면 첫날 밤 한 명 죽고 낮에 시민을 잘못 처형하면 바로 마피아 승리
+- 나가기: 나간 사람은 죽은 것으로(역할 비공개), `minPlayers`보다 적어지면 `none`(무효)
+
+**채팅(`mafiaText`, 100자):** 시작 전·끝난 뒤·역할 없는 사람(중간 입장)은 모두에게. 낮(역할 확인 포함)은 산 사람이 모두에게(`scope: 'all'`, 죽은 사람도 본다). 밤엔 마피아끼리만(`mafia`), 나머지 산 사람은 `mafiaSilent`. 죽은 사람은 언제나 죽은 사람끼리만(`dead`). `whisper: true`로 온 말은 **보낼 때 밤·산 마피아가 아니면 버리고** `mafiaWhisperLate` — 마피아가 밤에 쓰던 말을 보내는 순간 밤이 끝나(모두 할 일을 마치면 바로 끝남) 낮 공개 채팅으로 나가 들통나던 문제(화면 테스트에서 발견). 웹도 입력을 시작할 때의 대상을 기억해 한 번 막는다.
+
+**클라이언트 → 서버:** `mafiaStart`(discussTimeSec), `mafiaText`(text, whisper?), `mafiaAction`(targetId|null)
+
+**서버 → 클라이언트**
+| 이벤트 | 내용 |
+|--------|------|
+| `mafiaStarted` | 시작 (discussTimeSec, mafiaCount, players) |
+| `mafiaRole` | 개인 (role, mafiaTeam — 마피아만, timeLimitMs) |
+| `mafiaNight` | 밤 시작 (day, timeLimitMs) |
+| `mafiaKillUpdate` | 산 마피아에게만: 마피아별 고른 사람 (kills) |
+| `mafiaInvestigated` | 경찰에게만 (targetId, nickname, isMafia) |
+| `mafiaDay` | 낮 시작 (day, killedId, killedNickname, alive, timeLimitMs) |
+| `mafiaVoteUpdate` | 투표한 사람 목록 (voted) — 누구를 찍었는지는 처형 때 표 수만 |
+| `mafiaExecuted` | 처형 결과 (executedId, executedNickname, tally, alive, timeLimitMs) |
+| `mafiaChat` | 채팅 (playerId, nickname, text, scope) |
+| `mafiaSilent` / `mafiaWhisperLate` | 보낸 사람에게만: 밤에 말할 수 없음 / 밤이 끝나 마피아 대화를 버림 |
+| `mafiaPresence` | 연결 끊김/복귀 (playerId, connected) |
+| `mafiaGameOver` | 종료 (winner: mafia·citizens·none, roles, nicknames, alive, day) |
+
+**재연결:** `roomJoined`의 `mafia`(내 역할만, 마피아면 동료·kills, 경찰이면 조사 기록, 의사면 오늘 밤 살린 사람, 산 사람, 투표한 사람·내 투표, 지난 밤·처형 결과, `timeLeftMs`) 또는 `mafiaGameOver`. 낮인데 `lastExecution.day === day`면 처형 결과를 보여 주는 5초다.
+
+**DB:** 이긴 팀 `isWinner`·score 1·rank 1, 진 팀 rank 2, `extra: { role, winner, day }`. 봇은 넣지 않는다.
 
 ## Skulking 타이머
 

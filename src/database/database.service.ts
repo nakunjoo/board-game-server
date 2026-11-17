@@ -8,7 +8,7 @@ import { isBotId } from '../game/bots/bot.util';
 
 export interface CreateSessionParams {
   roomName: string;
-  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle' | 'blackjack' | 'casino' | 'drawing' | 'liar';
+  gameType: 'gang' | 'spice' | 'skulking' | 'minesweeper' | 'slide-puzzle' | 'blackjack' | 'casino' | 'drawing' | 'liar' | 'mafia';
   playerCount: number;
   totalRounds?: number;
 }

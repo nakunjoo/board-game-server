@@ -10,6 +10,7 @@ import { SpiceHandler } from '../games/spice/spice.handler';
 import { SkulkingHandler } from '../games/skulking/skulking.handler';
 import { Room } from '../game.types';
 import { BotService } from './bot.service';
+import { MafiaHandler } from '../games/mafia/mafia.handler';
 import { LiarHandler } from '../games/liar/liar.handler';
 import { BotBrain, BotSelf } from './bot.brain';
 import { createBotSocket, isBotId } from './bot.util';
@@ -74,7 +75,9 @@ describe('봇 시나리오 (게이트웨이 경유)', () => {
         spice,
         skulking,
         new LiarHandler(ctx, fakeDb()),
+        new MafiaHandler(ctx, fakeDb()),
       ),
+      {} as never,
     );
     errs = [];
     autoActs = 0;

@@ -17,6 +17,7 @@ import { SkulkingHandler } from './games/skulking/skulking.handler';
 import { CasinoHandler } from './games/casino/casino.handler';
 import { DrawingHandler } from './games/drawing/drawing.handler';
 import { LiarHandler } from './games/liar/liar.handler';
+import { MafiaHandler } from './games/mafia/mafia.handler';
 import { BotService } from './bots/bot.service';
 import { DatabaseService } from '../database/database.service';
 import { getSupabaseAdmin } from '../database/supabase-admin';
@@ -52,16 +53,23 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly liarHandler: LiarHandler,
     private readonly supabase: DatabaseService,
     private readonly bots: BotService,
+    private readonly mafiaHandler: MafiaHandler,
   ) {}
 
   /** 게임별 최대 인원. 웹 utils/games/*.ts의 maxPlayers와 같게 */
   static readonly MAX_PLAYERS: Record<string, number> = {
     liar: LiarHandler.MAX_PLAYERS,
+    mafia: MafiaHandler.MAX_PLAYERS,
   };
   static readonly DEFAULT_MAX_PLAYERS = 6;
 
   /** 카드 덱을 쓰지 않는 게임 */
-  private static readonly NO_DECK_GAMES = ['casino', 'drawing', 'liar'];
+  private static readonly NO_DECK_GAMES = [
+    'casino',
+    'drawing',
+    'liar',
+    'mafia',
+  ];
 
   // ── 토큰 검증 ─────────────────────────────────────────────
 
@@ -153,6 +161,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           this.drawingHandler.handleDisconnect(room, playerId);
         if (room.gameType === 'liar')
           this.liarHandler.handleDisconnect(room, playerId);
+        if (room.gameType === 'mafia')
+          this.mafiaHandler.handleDisconnect(room, playerId);
         console.log(
           `'${playerId}' disconnected from '${roomName}', waiting ${GameContext.DISCONNECT_GRACE_MS}ms for reconnect`,
         );
@@ -194,8 +204,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // 카드를 쓰지 않는 게임
     const deck = GameGateway.NO_DECK_GAMES.includes(gameType)
-        ? []
-        : this.engineFactory.get(gameType).createDeck();
+      ? []
+      : this.engineFactory.get(gameType).createDeck();
 
     const room = {
       name,
@@ -343,6 +353,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return this.liarHandler.buildLiarState(room, playerId);
     };
 
+    // ── 마피아 재연결 공통 필드 ───────────────────────────────
+    const buildMafiaState = () => {
+      if (room.gameType !== 'mafia') return {};
+      return this.mafiaHandler.buildMafiaState(room, playerId);
+    };
+
     // ── Spice 재연결 공통 필드 ─────────────────────────────────
     const buildSpiceState = () => {
       const wonCardsMap = room.state.wonCards ?? new Map<string, unknown[]>();
@@ -460,12 +476,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ...casino,
         ...drawing,
         ...buildLiarState(),
+        ...buildMafiaState(),
       });
 
       if (room.gameType === 'drawing')
         this.drawingHandler.handleReconnect(room, playerId);
       if (room.gameType === 'liar')
         this.liarHandler.handleReconnect(room, playerId);
+      if (room.gameType === 'mafia')
+        this.mafiaHandler.handleReconnect(room, playerId);
 
       this.ctx.broadcastToRoom(
         name,
@@ -538,6 +557,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ...casino,
         ...drawing,
         ...buildLiarState(),
+        ...buildMafiaState(),
       });
       return;
     }
@@ -618,6 +638,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       ...casino,
       ...drawing,
       ...buildLiarState(),
+      ...buildMafiaState(),
     });
 
     this.ctx.broadcastToRoom(
@@ -670,6 +691,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         this.drawingHandler.handlePlayerLeft(room, playerId);
       } else if (room.gameType === 'liar') {
         this.liarHandler.handlePlayerLeft(room, playerId);
+      } else if (room.gameType === 'mafia') {
+        this.mafiaHandler.handlePlayerLeft(room, playerId);
       } else {
         this.gangHandler.handlePlayerLeft(room, playerId);
       }
@@ -1156,5 +1179,31 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: WebSocket,
   ): void {
     this.bots.removeBot(data, client);
+  }
+
+  // ── 마피아 전용 이벤트 ───────────────────────────────────
+
+  @SubscribeMessage('mafiaStart')
+  handleMafiaStart(
+    @MessageBody() data: { roomName: string; discussTimeSec: number },
+    @ConnectedSocket() client: WebSocket,
+  ): Promise<void> {
+    return this.mafiaHandler.handleStart(data, client);
+  }
+
+  @SubscribeMessage('mafiaText')
+  handleMafiaText(
+    @MessageBody() data: { roomName: string; text: unknown; whisper?: unknown },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.mafiaHandler.handleText(data, client);
+  }
+
+  @SubscribeMessage('mafiaAction')
+  handleMafiaAction(
+    @MessageBody() data: { roomName: string; targetId: unknown },
+    @ConnectedSocket() client: WebSocket,
+  ): void {
+    this.mafiaHandler.handleAction(data, client);
   }
 }

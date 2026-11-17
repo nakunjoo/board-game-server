@@ -10,6 +10,7 @@ import { SkulkingHandler } from '../games/skulking/skulking.handler';
 import { DatabaseService } from '../../database/database.service';
 import { Card, Room } from '../game.types';
 import { BotService } from './bot.service';
+import { MafiaHandler } from '../games/mafia/mafia.handler';
 import { LiarHandler } from '../games/liar/liar.handler';
 import { createBotSocket, isBotId } from './bot.util';
 import { createGangBot } from './gang.bot';
@@ -52,6 +53,7 @@ describe('봇', () => {
       spice,
       skulking,
       new LiarHandler(ctx, fakeDb()),
+      new MafiaHandler(ctx, fakeDb()),
     );
   });
 
